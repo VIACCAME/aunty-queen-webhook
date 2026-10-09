@@ -7,21 +7,24 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "aunty_queen_secret_123")
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
-FLOW_ID = os.environ.get("FLOW_ID", "2033800373990985")
+FLOW_ID = os.environ.get("FLOW_ID", "")
+GOOGLE_SHEET_WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_WEBHOOK_URL")
 
-# In-memory session store (tracks user state and responses)
-# In production, back this with Redis, PostgreSQL, or Supabase
+# In-memory session tracking
 sessions = {}
 
-GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
-HEADERS = {
-    "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-    "Content-Type": "application/json"
-}
+def get_graph_url():
+    return f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+
+def get_headers():
+    return {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Aunty Queen Hotline Webhook is live!", 200
+    return "Aunty Queen Hotline Webhook is running!", 200
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -35,14 +38,21 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def receive_message():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
     try:
-        entry = data.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
+        entry = data.get("entry", [])
+        if not entry:
+            return jsonify({"status": "ignored"}), 200
+
+        changes = entry[0].get("changes", [])
+        if not changes:
+            return jsonify({"status": "ignored"}), 200
+
+        value = changes[0].get("value", {})
         messages = value.get("messages", [])
 
+        # Ignore delivery receipts, read statuses, etc.
         if not messages:
             return jsonify({"status": "no_messages"}), 200
 
@@ -50,35 +60,48 @@ def receive_message():
         sender_id = msg.get("from")
         msg_type = msg.get("type")
 
+        if not sender_id:
+            return jsonify({"status": "no_sender"}), 200
+
         # Initialize session state if new user
         if sender_id not in sessions:
             sessions[sender_id] = {
                 "step": "START",
                 "lang": "en",
-                "name": "",
+                "name": "Friend",
                 "intent": ""
             }
 
         session = sessions[sender_id]
 
-        # -------------------------------------------------------------
-        # 1. HANDLE FLOW SUBMISSIONS (User submitted the Meta Flow)
-        # -------------------------------------------------------------
+        # 1. Handle Flow form completion
         if msg_type == "interactive" and "nfm_reply" in msg.get("interactive", {}):
-            flow_data = msg["interactive"]["nfm_reply"].get("response_json")
+            flow_data = msg["interactive"]["nfm_reply"].get("response_json", {})
             print(f"[FLOW COMPLETED] from {sender_id}: {flow_data}")
-            
-            client_name = session.get("name", "there")
+
+            # Send intake data to Google Sheets
+            save_to_google_sheets({
+                "phone": sender_id,
+                "name": session.get("name", ""),
+                "language": session.get("lang", "en"),
+                "category": "Intake Flow",
+                "age": flow_data.get("age", ""),
+                "location": flow_data.get("location", ""),
+                "currently_pregnant": flow_data.get("currently_pregnant", ""),
+                "gestational_age": flow_data.get("gestational_age", ""),
+                "notes": flow_data.get("reason", "")
+            })
+
             send_text(
                 sender_id,
-                f"Thank you, {client_name}. Aunty Queen has safely received your details. "
-                "A confidential counselor will review your information and be with you shortly. "
-                "\n\n*Reminder:* You can turn on disappearing messages or delete this chat whenever you wish to keep your phone private."
+                f"Thank you, {session.get('name')}. Aunty Queen has safely received your details. "
+                "A confidential counselor will review your information and be with you shortly.\n\n"
+                "*Tip:* You can turn on disappearing messages or delete this chat to keep your phone private."
             )
             session["step"] = "HANDOFF_TO_HUMAN"
             return jsonify({"status": "flow_handled"}), 200
 
-        # Extract text or button / list responses
+        # Extract text or button / list choice
         user_input = ""
         button_id = ""
 
@@ -95,9 +118,7 @@ def receive_message():
 
         current_step = session["step"]
 
-        # -------------------------------------------------------------
-        # STEP 0: START -> LANGUAGE SELECTION
-        # -------------------------------------------------------------
+        # STEP 0: LANGUAGE SELECTION
         if current_step == "START":
             send_buttons(
                 sender_id,
@@ -106,18 +127,13 @@ def receive_message():
                     {"id": "lang_en", "title": "English"},
                     {"id": "lang_fr", "title": "Français"}
                 ],
-                footer_text="Aunty Queen Confidential Service"
+                footer_text="Confidential Service"
             )
             session["step"] = "AWAITING_LANG"
 
-        # -------------------------------------------------------------
-        # STEP 1: AWAITING LANGUAGE -> WELCOME & CONSENT (1.1, 1.2, 1.3)
-        # -------------------------------------------------------------
+        # STEP 1: WELCOME & CONSENT
         elif current_step == "AWAITING_LANG":
-            if button_id == "lang_fr" or user_input.lower() in ["2", "french", "français"]:
-                session["lang"] = "fr"
-            else:
-                session["lang"] = "en"
+            session["lang"] = "fr" if (button_id == "lang_fr" or "fr" in user_input.lower()) else "en"
 
             welcome_msg = (
                 "Hello, and welcome to Aunty Queen Hotline.\n\n"
@@ -138,34 +154,26 @@ def receive_message():
             )
             session["step"] = "AWAITING_CONSENT"
 
-        # -------------------------------------------------------------
-        # STEP 2: CONSENT CHECK (1.3 / 1.3a)
-        # -------------------------------------------------------------
+        # STEP 2: CONSENT RESPONSE
         elif current_step == "AWAITING_CONSENT":
             if button_id == "consent_explain" or "what" in user_input.lower():
                 explanation = (
                     "We ask about: age, date of last period, whether pregnancy is confirmed, "
                     "reason for reaching out, and whether someone is supporting you.\n\n"
                     "Any question can be skipped.\n\n"
-                    "What name would you like us to call you?"
+                    "What name or nickname would you like us to call you?"
                 )
                 send_text(sender_id, explanation)
-                session["step"] = "AWAITING_NAME"
             else:
                 send_text(sender_id, "Thank you. What name or nickname would you like us to call you?")
-                session["step"] = "AWAITING_NAME"
+            session["step"] = "AWAITING_NAME"
 
-        # -------------------------------------------------------------
-        # STEP 3: CAPTURE NAME -> PRESENT SERVICE MENU (1.4)
-        # -------------------------------------------------------------
+        # STEP 3: NAME CAPTURE -> MENU
         elif current_step == "AWAITING_NAME":
             client_name = user_input if user_input else "Friend"
             session["name"] = client_name
 
-            menu_body = (
-                f"Thank you, {client_name}.\n\n"
-                "How can we support you today? Please choose an option below:"
-            )
+            menu_body = f"Thank you, {client_name}.\n\nHow can we support you today?"
             send_list_menu(
                 sender_id,
                 body_text=menu_body,
@@ -176,23 +184,23 @@ def receive_message():
                         "rows": [
                             {
                                 "id": "opt_pills_info",
-                                "title": "1. Safe abortion pills",
-                                "description": "Information on safe abortion with pills up to 12 weeks"
+                                "title": "Safe abortion pills",
+                                "description": "Information on pills up to 12 weeks"
                             },
                             {
                                 "id": "opt_already_used",
-                                "title": "2. Already used pills",
-                                "description": "I have taken pills and have questions or symptoms"
+                                "title": "Already used pills",
+                                "description": "Questions, bleeding, or symptoms"
                             },
                             {
                                 "id": "opt_contraception",
-                                "title": "3. Contraception",
-                                "description": "Information on family planning and birth control"
+                                "title": "Contraception",
+                                "description": "Family planning and birth control"
                             },
                             {
                                 "id": "opt_other",
-                                "title": "4. Something else",
-                                "description": "Speak with a counselor about another topic"
+                                "title": "Something else",
+                                "description": "Speak with a counselor"
                             }
                         ]
                     }
@@ -200,42 +208,37 @@ def receive_message():
             )
             session["step"] = "AWAITING_SERVICE_CHOICE"
 
-        # -------------------------------------------------------------
-        # STEP 4: ROUTE BASED ON CHOICE (1.4 & 1.5)
-        # -------------------------------------------------------------
+        # STEP 4: SERVICE ROUTING
         elif current_step == "AWAITING_SERVICE_CHOICE":
             client_name = session.get("name", "there")
 
-            # Route 1: Safe Abortion Pills -> Launch Flow
-            if button_id == "opt_pills_info" or user_input.startswith("1"):
+            if button_id == "opt_pills_info" or "1" in user_input or "pill" in user_input.lower():
                 session["intent"] = "pills_info"
-                send_interactive_flow(
-                    sender_id,
-                    header_text="Intake Support",
-                    body_text=(
-                        f"{client_name}, Aunty Queen shares scientific information about safe self-managed "
-                        "abortion with pills for pregnancies up to 12 weeks, as well as clinic procedures (MVA).\n\n"
-                        "Please tap below to answer a few brief questions so our team can provide tailored guidance."
-                    ),
-                    button_label="Open Intake Form"
-                )
-                session["step"] = "IN_FLOW"
+                if FLOW_ID:
+                    send_interactive_flow(
+                        sender_id,
+                        header_text="Intake Support",
+                        body_text=f"{client_name}, tap below to complete our confidential intake form so our team can provide tailored guidance.",
+                        button_label="Open Intake Form"
+                    )
+                    session["step"] = "IN_FLOW"
+                else:
+                    send_text(sender_id, f"{client_name}, a counselor will guide you through our safe abortion information shortly.")
+                    session["step"] = "HANDOFF_TO_HUMAN"
 
-            # Route 2: Already Used Pills -> Warning Signs Check (Stage 5)
-            elif button_id == "opt_already_used" or user_input.startswith("2"):
+            elif button_id == "opt_already_used" or "2" in user_input:
                 session["intent"] = "used_pills"
-                warning_signs_msg = (
+                warning_msg = (
                     f"{client_name}, we are here to support you.\n\n"
-                    "⚠️ *Please check if you are experiencing any of these 4 warning signs:*\n"
-                    "1. Too much bleeding (soaking 2+ maxi pads/hour for 2+ hours)\n"
+                    "⚠️ *Are you experiencing any of these 4 warning signs right now?*\n"
+                    "1. Soaking 2+ maxi pads/hour for 2+ hours\n"
                     "2. Severe pain that painkillers do not relieve\n"
                     "3. Vaginal discharge that smells bad\n"
-                    "4. Fever over 38°C for more than 24 hours, or over 39°C at any time\n\n"
-                    "Are you experiencing any of these right now?"
+                    "4. Fever over 38°C for 24+ hours or over 39°C at any time"
                 )
                 send_buttons(
                     sender_id,
-                    body_text=warning_signs_msg,
+                    body_text=warning_msg,
                     buttons=[
                         {"id": "warning_yes", "title": "Yes, I have them"},
                         {"id": "warning_no", "title": "No, I am okay"}
@@ -243,30 +246,21 @@ def receive_message():
                 )
                 session["step"] = "STAGE_5_TRIAGE"
 
-            # Route 3: Contraception (6.3)
-            elif button_id == "opt_contraception" or user_input.startswith("3"):
+            elif button_id == "opt_contraception" or "3" in user_input:
                 session["intent"] = "contraception"
                 send_text(
                     sender_id,
-                    f"{client_name}, you can get pregnant again immediately after an abortion or period. "
-                    "Hormonal methods (pills, implants, injections) can be started right away.\n\n"
-                    "A counselor is being connected to discuss which method best suits your lifestyle."
+                    f"{client_name}, a woman can get pregnant again immediately after an abortion or period. "
+                    "Hormonal methods can be started right away. A counselor will be right with you to discuss options."
                 )
                 session["step"] = "HANDOFF_TO_HUMAN"
 
-            # Route 4: Something else
             else:
                 session["intent"] = "other"
-                send_text(
-                    sender_id,
-                    f"Please tell us in your own words what you need assistance with, {client_name}. "
-                    "A counselor will read your message and reply."
-                )
+                send_text(sender_id, f"Please tell us in your own words what you need assistance with, {client_name}. A counselor will reply shortly.")
                 session["step"] = "HANDOFF_TO_HUMAN"
 
-        # -------------------------------------------------------------
-        # STEP 5: WARNING SIGNS TRIAGE (Quick Reply handling)
-        # -------------------------------------------------------------
+        # STEP 5: WARNING SIGNS TRIAGE
         elif current_step == "STAGE_5_TRIAGE":
             if button_id == "warning_yes" or "yes" in user_input.lower():
                 send_text(
@@ -274,33 +268,23 @@ def receive_message():
                     "🚨 *Urgent Medical Advice:*\n"
                     "What you describe is a sign that requires immediate medical care. "
                     "Please go to the nearest hospital or health clinic now.\n\n"
-                    "Any complication is treated exactly the same as for a miscarriage, and you can simply say you had a miscarriage. "
-                    "Message us when you are safe; we are here."
+                    "The treatment is the same as for a miscarriage, and you can say you had a miscarriage. "
+                    "Message us when you can; we are here."
                 )
             else:
-                send_text(
-                    sender_id,
-                    "Thank you for confirming. A counselor is reviewing your chat history and will respond shortly to address your questions."
-                )
+                send_text(sender_id, "Thank you for letting us know. A counselor is reviewing your chat and will assist you shortly.")
             session["step"] = "HANDOFF_TO_HUMAN"
 
-        # -------------------------------------------------------------
-        # STEP 6: HUMAN HANDOFF ACTIVE
-        # -------------------------------------------------------------
         elif current_step == "HANDOFF_TO_HUMAN":
-            # Bot remains silent so counselors can chat without automation interference
+            # Handed off: silently let human counselors talk
             pass
 
     except Exception as e:
-        print(f"Error handling message: {e}")
+        print(f"[ERROR in receive_message]: {e}")
 
     return jsonify({"status": "success"}), 200
 
-
-# ---------------------------------------------------------------------
-# HELPER FUNCTIONS (WhatsApp Cloud API)
-# ---------------------------------------------------------------------
-
+# API Helpers
 def send_text(recipient_id, text_body):
     payload = {
         "messaging_product": "whatsapp",
@@ -309,19 +293,16 @@ def send_text(recipient_id, text_body):
         "type": "text",
         "text": {"body": text_body}
     }
-    requests.post(GRAPH_URL, headers=HEADERS, json=payload)
+    r = requests.post(get_graph_url(), headers=get_headers(), json=payload)
+    print(f"send_text response: {r.status_code}")
 
 def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text=None):
-    """Sends 1 to 3 interactive reply buttons (Meta limit: max 3)."""
     interactive_obj = {
         "type": "button",
         "body": {"text": body_text},
         "action": {
             "buttons": [
-                {
-                    "type": "reply",
-                    "reply": {"id": b["id"], "title": b["title"][:20]}
-                }
+                {"type": "reply", "reply": {"id": b["id"], "title": b["title"][:20]}}
                 for b in buttons
             ]
         }
@@ -338,10 +319,10 @@ def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text
         "type": "interactive",
         "interactive": interactive_obj
     }
-    requests.post(GRAPH_URL, headers=HEADERS, json=payload)
+    r = requests.post(get_graph_url(), headers=get_headers(), json=payload)
+    print(f"send_buttons response: {r.status_code}")
 
-def send_list_menu(recipient_id, body_text, button_label, sections, header_text=None, footer_text=None):
-    """Sends an interactive menu (up to 10 options)."""
+def send_list_menu(recipient_id, body_text, button_label, sections):
     interactive_obj = {
         "type": "list",
         "body": {"text": body_text},
@@ -350,11 +331,6 @@ def send_list_menu(recipient_id, body_text, button_label, sections, header_text=
             "sections": sections
         }
     }
-    if header_text:
-        interactive_obj["header"] = {"type": "text", "text": header_text}
-    if footer_text:
-        interactive_obj["footer"] = {"text": footer_text}
-
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -362,7 +338,8 @@ def send_list_menu(recipient_id, body_text, button_label, sections, header_text=
         "type": "interactive",
         "interactive": interactive_obj
     }
-    requests.post(GRAPH_URL, headers=HEADERS, json=payload)
+    r = requests.post(get_graph_url(), headers=get_headers(), json=payload)
+    print(f"send_list_menu response: {r.status_code}")
 
 def send_interactive_flow(recipient_id, header_text, body_text, button_label):
     payload = {
@@ -383,14 +360,27 @@ def send_interactive_flow(recipient_id, header_text, body_text, button_label):
                     "flow_id": FLOW_ID,
                     "flow_cta": button_label,
                     "flow_action": "navigate",
-                    "flow_action_payload": {
-                        "screen": "BASIC_INFO"
-                    }
+                    "flow_action_payload": {"screen": "BASIC_INFO"}
                 }
             }
         }
     }
-    requests.post(GRAPH_URL, headers=HEADERS, json=payload)
+    r = requests.post(get_graph_url(), headers=get_headers(), json=payload)
+    print(f"send_interactive_flow response: {r.status_code}")
+
+def save_to_google_sheets(payload):
+    if not GOOGLE_SHEET_WEBHOOK_URL:
+        return
+    try:
+        requests.post(
+            GOOGLE_SHEET_WEBHOOK_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            allow_redirects=True,
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Google Sheet logging error: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
