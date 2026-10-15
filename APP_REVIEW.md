@@ -17,10 +17,10 @@ Status on 15 Oct 2026, from Permissions and features:
 |---|---|
 | Contact email | communications@viacame.org (already set) |
 | Privacy policy URL | https://aunty-queen-webhook.onrender.com/privacy (live once PR #1 is merged) |
-| Data deletion instructions URL | https://aunty-queen-webhook.onrender.com/privacy#data-deletion |
+| Data deletion instructions URL | https://aunty-queen-webhook.onrender.com/data-deletion |
 | Terms of Service URL | optional; leave empty or reuse the privacy URL |
 | App icon | 1024×1024 PNG of the Aunty Queen logo |
-| Category | Health & fitness (or Business and pages) |
+| Category | Community & government |
 
 On Render, also set `PRIVACY_CONTACT_EMAIL = communications@viacame.org` so the policy shows the email.
 
