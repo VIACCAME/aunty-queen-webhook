@@ -249,6 +249,10 @@ def process_webhook(data):
             for change in entry.get("changes", []):
                 field = change.get("field")
                 value = change.get("value", {})
+                # Other numbers (e.g. LifeDrop) can share this Meta app; only handle our own number.
+                to_number = (value.get("metadata") or {}).get("phone_number_id")
+                if PHONE_NUMBER_ID and to_number and to_number != PHONE_NUMBER_ID:
+                    continue
                 if field == "smb_message_echoes":
                     for echo in value.get("message_echoes", []):
                         handle_staff_echo(echo)
