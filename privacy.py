@@ -11,6 +11,29 @@ CONTACT_EMAIL = os.environ.get("PRIVACY_CONTACT_EMAIL", "")
 LAST_UPDATED = "15 October 2026"
 
 
+@privacy.route("/data-deletion", methods=["GET"])
+def data_deletion_page():
+    org = html.escape(ORG_NAME)
+    contact = (f' You can also email <a href="mailto:{html.escape(CONTACT_EMAIL)}">{html.escape(CONTACT_EMAIL)}</a>.'
+               if CONTACT_EMAIL else "")
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Data Deletion · {org}</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;line-height:1.6;color:#1c1c1c;background:#fff}}</style>
+</head><body>
+<h1>How to delete your data</h1>
+<p><b>{org}</b></p>
+<ol>
+ <li>Send the word <b>DELETE</b> to the hotline on WhatsApp, from the number you used to contact us.</li>
+ <li>A counselor will delete your intake records and conversation notes, and confirm in the chat.</li>
+ <li>You can also delete the chat on your own phone at any time.</li>
+</ol>
+<p>{contact}</p>
+<p>See our full <a href="/privacy">privacy policy</a>.</p>
+</body></html>"""
+    return page, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
 @privacy.route("/privacy", methods=["GET"])
 def privacy_page():
     org = html.escape(ORG_NAME)
