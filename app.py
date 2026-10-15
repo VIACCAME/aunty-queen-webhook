@@ -12,9 +12,11 @@ import ai
 from flask import Flask, request, jsonify
 
 from onboarding import onboarding
+from privacy import privacy
 
 app = Flask(__name__)
 app.register_blueprint(onboarding)
+app.register_blueprint(privacy)
 
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 APP_SECRET = os.environ.get("APP_SECRET")  # Meta App > Settings > Basic > App secret (optional but recommended)
@@ -32,6 +34,8 @@ AI_MAX_QUESTIONS = int(os.environ.get("AI_MAX_QUESTIONS", "8"))
 BOT_RESUME_COMMANDS = {"#bot", "#done"}
 # Clients can type this to start the intake again.
 CLIENT_RESTART_WORDS = {"restart", "recommencer"}
+# Clients can type this to ask for their data to be deleted (see /privacy).
+DELETE_WORDS = {"delete", "supprimer"}
 
 # In-memory cache; the Google Sheet "Sessions" tab is the source of truth across restarts.
 sessions = {}
@@ -318,6 +322,13 @@ def handle_client_message(msg):
             return
 
         mark_as_read(msg.get("id"))
+        if user_input.strip().lower() in DELETE_WORDS:
+            # Promised in the privacy policy (/privacy#data-deletion); a counselor deletes the records.
+            send_text(sender_id, "We have received your request. A counselor will delete your records and confirm here.")
+            hand_to_human(session, status="DELETION_REQUESTED")
+            store_session(session)
+            save_intake(session)
+            return
         try:
             if session["step"] is None:
                 go(session, "LANG")
