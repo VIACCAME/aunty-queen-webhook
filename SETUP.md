@@ -94,5 +94,32 @@ Things that change on the phone after connecting:
 3. Reply from the Business app and check that the bot goes quiet.
 4. Send `#bot` and check that the next message restarts the intake.
 
+## Alternative: send through Infobip instead of Meta directly
+Use this if Meta blocks step 5 ("… can't onboard customers right now"). Infobip is an approved Meta partner, so its own signup flow can connect the number with coexistence. Code: `infobip.py`.
+
+Counselor replies from the WhatsApp Business app reach the bot through Infobip's **"Business app message echo"** event. Its payload format isn't in Infobip's public API reference, so the bot recognises an echo either by coming from the hotline number or by an "echo" marker, and logs the field names of every echo and every unrecognised message. **After the first counselor reply, check the Render logs** for `[Infobip] staff echo` and confirm the bot went quiet.
+
+Steps:
+1. Sign up at infobip.com (free trial: 60 days, 100 conversations, verified test numbers only).
+2. **Test with a spare number first, not the hotline.** A number connected through Infobip is tied to Infobip until you disconnect it there.
+3. Connect the number: Channels → WhatsApp → Senders → add sender → connect an existing WhatsApp Business app number. Choose **"Don't share chats"**.
+4. Go to **Developer Tools → Subscriptions Management → Create subscription**:
+   - Channel: **WhatsApp**
+   - Events: **Inbound message** and **Business app message echo**
+   - Filtering: the hotline number
+   - Notification profile: webhook URL `https://<render-url>/infobip/webhook?key=<INFOBIP_WEBHOOK_KEY>`
+   Then check that Numbers → the hotline → WhatsApp → Inbound configuration no longer says "Subscription missing".
+5. In Render → Environment, set:
+
+| Key | Value |
+|---|---|
+| `WHATSAPP_PROVIDER` | `infobip` (remove it, or set `meta`, to go back to Meta) |
+| `INFOBIP_BASE_URL` | your personal API base URL, shown on the Infobip portal home page, e.g. `abcd12.api.infobip.com` |
+| `INFOBIP_API_KEY` | portal → Developers → API keys → create |
+| `INFOBIP_SENDER` | the WhatsApp number, digits only, e.g. `2376…` |
+| `INFOBIP_WEBHOOK_KEY` | a new random string, the same one used in the URL in step 4 |
+
+6. Run the tests in section 6. Test 3 (counselor reply) is the one most likely to fail.
+
 ## Not done yet
 - **French:** the language choice is saved, and the AI answers side questions in the client's language. The scripted messages are still in English and need French texts reviewed by the team.

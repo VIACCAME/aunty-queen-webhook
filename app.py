@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 import requests
 import ai
+import infobip
 from flask import Flask, request, jsonify
 
 from onboarding import onboarding
@@ -23,6 +24,9 @@ APP_SECRET = os.environ.get("APP_SECRET")  # Meta App > Settings > Basic > App s
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 GRAPH_VERSION = os.environ.get("GRAPH_VERSION", "v23.0")
+# "meta" (default) sends through Meta's Cloud API directly; "infobip" sends through Infobip (see infobip.py).
+WHATSAPP_PROVIDER = os.environ.get("WHATSAPP_PROVIDER", "meta").strip().lower()
+USE_INFOBIP = WHATSAPP_PROVIDER == "infobip"
 GOOGLE_SHEET_WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_WEBHOOK_URL")
 SHEET_SECRET = os.environ.get("SHEET_SECRET", "")
 # After this many days of silence, a conversation that was handed to a human starts a fresh intake.
@@ -74,6 +78,8 @@ def send_meta_request(payload):
 
 
 def send_text(recipient_id, text_body):
+    if USE_INFOBIP:
+        return infobip.send_text(recipient_id, text_body)
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -86,6 +92,8 @@ def send_text(recipient_id, text_body):
 
 def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text=None):
     """WhatsApp button limits: max 3 buttons, max 20 chars title, max 1024 chars body."""
+    if USE_INFOBIP:
+        return infobip.send_buttons(recipient_id, body_text, buttons, header_text, footer_text)
     interactive_obj = {
         "type": "button",
         "body": {"text": body_text[:1024]},
@@ -112,6 +120,8 @@ def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text
 
 
 def mark_as_read(message_id):
+    if USE_INFOBIP:
+        return infobip.mark_as_read(message_id)
     send_meta_request({"messaging_product": "whatsapp", "status": "read", "message_id": message_id})
 
 
@@ -262,6 +272,26 @@ def process_webhook(data):
                 # "history", "smb_app_state_sync" and status updates are ignored.
     except Exception as e:
         print(f"[ERROR in process_webhook]: {e}")
+
+
+@app.route("/infobip/webhook", methods=["POST"])
+def receive_infobip_webhook():
+    if not infobip.webhook_key_ok(request.args.get("key")):
+        return "Forbidden", 403
+    data = request.get_json(silent=True) or {}
+    threading.Thread(target=process_infobip_webhook, args=(data,), daemon=True).start()
+    return jsonify({"status": "received"}), 200
+
+
+def process_infobip_webhook(data):
+    try:
+        client_messages, staff_echoes = infobip.split_webhook(data)
+        for echo in staff_echoes:
+            handle_staff_echo(echo)
+        for msg in client_messages:
+            handle_client_message(msg)
+    except Exception as e:
+        print(f"[ERROR in process_infobip_webhook]: {e}")
 
 
 def handle_staff_echo(echo):
