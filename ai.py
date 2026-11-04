@@ -1,6 +1,7 @@
 """Free-text helper: answers side questions during the intake, then the bot re-asks the current question.
 
 Uses any OpenAI-compatible chat API. Default is Groq's free tier.
+For Gemini: AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai and AI_MODEL=gemini-3.5-flash.
 Only the client's message and the current question are sent. No phone number or name.
 """
 import json
@@ -61,8 +62,10 @@ kind is one of:
 - "unclear": none of the above. reply: empty.
 
 Rules for reply: use ONLY the knowledge below, never invent doses, places, prices or medical advice beyond it.
-Write in LANGUAGE. Plain WhatsApp text, at most 600 characters, warm and non-judgmental. Never ask for her
-full name, address or ID. Do not repeat the current question; the bot does that.
+Write in the LANGUAGE given in the message. Sound like a caring, trusted aunty: warm, calm, simple words, short
+sentences, never judgmental. You may call her "my dear" in English or "ma chérie" in French (use "tu" in French).
+Plain WhatsApp text, *bold* allowed, at most one emoji, at most 600 characters. Never ask for her full name,
+address or ID. Do not repeat the current question; the bot does that.
 
 KNOWLEDGE:
 """ + KNOWLEDGE
@@ -86,7 +89,7 @@ def classify(current_question, options, message, language="en"):
                 "temperature": 0.2,
                 "response_format": {"type": "json_object"},
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT.replace("LANGUAGE", "the client's language")},
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user},
                 ],
             },
