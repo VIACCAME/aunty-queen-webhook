@@ -121,5 +121,8 @@ Steps:
 
 6. Run the tests in section 6. Test 3 (counselor reply) is the one most likely to fail.
 
+## Wording and languages
+All bot texts, in English and French, are in `messages.py`. Edit the wording there; keep the medical facts (doses, timings, warning signs) exactly as in the protocol. The French texts use "tu" and **need review by the team** before going live.
+
 ## Not done yet
-- **French:** the language choice is saved, and the AI answers side questions in the client's language. The scripted messages are still in English and need French texts reviewed by the team.
+- **French review:** a French-speaking counselor should read every French text in `messages.py`.

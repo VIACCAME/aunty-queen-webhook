@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import requests
 import ai
 import infobip
+from messages import MESSAGES, BUTTONS, DEFAULT_NAME
 from flask import Flask, request, jsonify
 
 from onboarding import onboarding
@@ -350,15 +351,14 @@ def handle_client_message(msg):
             session = new_session(sender_id)
 
         if msg_type not in ("text", "interactive"):
-            send_text(sender_id, "Sorry, our assistant can only read typed messages. Please type your answer, "
-                                 "or wait and a counselor will reply to you here.")
+            say(session, "typed_only")
             store_session(session)
             return
 
         mark_as_read(msg.get("id"))
         if user_input.strip().lower() in DELETE_WORDS:
             # Promised in the privacy policy (/privacy#data-deletion); a counselor deletes the records.
-            send_text(sender_id, "We have received your request. A counselor will delete your records and confirm here.")
+            say(session, "delete_ack")
             hand_to_human(session, status="DELETION_REQUESTED")
             store_session(session)
             save_intake(session)
@@ -449,11 +449,11 @@ def handle_answer(session, user_input, button_id):
 
             if kind == "urgent":
                 data["warning_signs"] = f"Reported: {text[:200]}"
-                send_text(session["phone"], reply or URGENT_TEXT)
+                send_text(session["phone"], reply or t(session, "urgent"))
                 hand_to_human(session, status="URGENT")
                 return
             if kind == "human":
-                send_text(session["phone"], reply or "Thank you. A counselor will reply to you here directly.")
+                send_text(session["phone"], reply or t(session, "human_handover"))
                 hand_to_human(session)
                 return
             if kind == "question":
@@ -462,10 +462,10 @@ def handle_answer(session, user_input, button_id):
                 if reply:
                     send_text(session["phone"], reply)
                 if session["ai_questions"] > AI_MAX_QUESTIONS:
-                    send_text(session["phone"], "A counselor will continue with you here directly.")
+                    say(session, "ai_limit")
                     hand_to_human(session)
                     return
-                send_text(session["phone"], "To continue, here is where we were:")
+                say(session, "back_to_question")
                 ask(session)
                 return
             if kind == "answer":
@@ -473,7 +473,7 @@ def handle_answer(session, user_input, button_id):
                 text = result.get("value") or text
             if option_ids and not option_id:
                 # Not an answer we understood: ask the same question again.
-                send_text(session["phone"], "Sorry, I did not understand. Please choose one of the options below.")
+                say(session, "not_understood")
                 ask(session)
                 return
 
@@ -498,24 +498,40 @@ def ask(session):
     STEPS[session["step"]]["ask"](session)
 
 
+def lang_of(session):
+    return "fr" if (session.get("data") or {}).get("language") == "fr" else "en"
+
+
 def name_of(session):
-    return session["data"].get("name", "Friend")
+    name = (session.get("data") or {}).get("name") or "Friend"
+    return DEFAULT_NAME[lang_of(session)] if name == "Friend" else name
 
 
-URGENT_TEXT = (
-    "🚨 *What you describe is one of the signs that needs medical care.*\n\n"
-    "Please go to the nearest health facility now. The treatment is the same as for a miscarriage, "
-    "and a woman can say she had a miscarriage. Message us when you can; we are here."
-)
+def t(session, key, **kw):
+    """The text for `key` in the client's language, with {name} filled in."""
+    return MESSAGES[key][lang_of(session)].format(name=name_of(session), **kw)
+
+
+def say(session, key, **kw):
+    return send_text(session["phone"], t(session, key, **kw))
+
+
+def buttons_for(session, *ids):
+    lang = lang_of(session)
+    return [{"id": i, "title": BUTTONS[i][lang]} for i in ids]
+
+
+def ask_buttons(session, key, ids, prefix="", **kw):
+    return send_buttons(session["phone"], body_text=prefix + t(session, key, **kw), buttons=buttons_for(session, *ids))
 
 
 # ----- STAGE 0 / 1: LANGUAGE, WELCOME & CONSENT ------------------------------
 def ask_lang(s):
     send_buttons(
         s["phone"],
-        body_text="Hello, and welcome to Aunty Queen Hotline.\nPlease select your language / Choisissez votre langue :",
-        buttons=[{"id": "lang_en", "title": "English"}, {"id": "lang_fr", "title": "Français"}],
-        footer_text="Aunty Queen Hotline"
+        body_text=t(s, "lang_prompt"),
+        buttons=buttons_for(s, "lang_en", "lang_fr"),
+        footer_text="Aunty Queen"
     )
 
 
@@ -525,37 +541,18 @@ def on_lang(s, oid, value):
 
 
 def ask_consent(s):
-    send_buttons(
-        s["phone"],
-        body_text=(
-            "Hello, and welcome to Aunty Queen Hotline.\n"
-            "We share general information on sexual and reproductive health, including safe abortion information based on World Health Organization guidelines.\n\n"
-            "🔒 *Confidentiality and chat safety:*\n"
-            "Everything shared in this chat is kept confidential. It is used only for our own records.\n"
-            "To keep this chat private on the phone, many women turn on disappearing messages or delete the chat when we finish.\n\n"
-            "To support you well, we will need to ask a few personal questions. Would that be OK?"
-        ),
-        buttons=[{"id": "c_ok", "title": "Yes, that is OK"}, {"id": "c_what", "title": "What will you ask?"}]
-    )
+    ask_buttons(s, "consent", ["c_ok", "c_what"])
 
 
 def on_consent(s, oid, value):
-    if oid == "c_what":
-        # 1.3a What we ask
-        send_text(s["phone"], (
-            "*What we ask:*\n"
-            "We ask about: age, date of last period, education, number of pregnancies and children, "
-            "reason for reaching out, and whether someone is supporting you.\n\n"
-            "Any question can be skipped."
-        ))
-    else:
-        send_text(s["phone"], "Thank you.")
     s["data"]["consent"] = "yes"
-    go(s, "NAME")
+    first = t(s, "consent_what") if oid == "c_what" else t(s, "consent_thanks")
+    send_text(s["phone"], first + "\n\n" + t(s, "name_ask"))
+    s["step"] = "NAME"
 
 
 def ask_name(s):
-    send_text(s["phone"], "What name would you like us to call you?")
+    say(s, "name_ask")
 
 
 def on_name(s, oid, value):
@@ -564,49 +561,30 @@ def on_name(s, oid, value):
 
 
 def ask_help(s):
-    send_text(s["phone"], (
-        f"Thank you, {name_of(s)}.\n\n"
-        "How can we support you today? Please reply with the number:\n"
-        "1. Information about safe abortion with pills\n"
-        "2. I have already used the pills and have questions\n"
-        "3. Information about contraception\n"
-        "4. Something else"
-    ))
+    say(s, "help_again" if s.get("help_seen") else "help_first")
+    s["help_seen"] = True
 
 
 def on_help(s, oid, value):
-    name = name_of(s)
     s["data"]["category"] = value
     if oid == "1":
         go(s, "PILLS_OFFER")
     elif oid == "2":
         go(s, "TRIAGE")
     elif oid == "3":
-        send_stage_6_3_contraception(s["phone"])
+        say(s, "contraception_info")
         go(s, "FOLLOWUP")
     else:
-        send_text(s["phone"], f"Please explain in your own words how we can assist you, {name}. A counselor will reply to you directly.")
+        say(s, "help_other")
         hand_to_human(s)
 
 
 def ask_pills_offer(s):
-    # 1.5 What the hotline offers
-    send_buttons(
-        s["phone"],
-        body_text=(
-            f"We will do our best to support you, {name_of(s)}.\n\n"
-            "Aunty Queen shares scientific information about safe self-managed abortion with pills, "
-            "for pregnancies up to 12 weeks. We can also give information about manual vacuum aspiration (MVA), which is done in a clinic.\n\n"
-            "An abortion with pills causes the same process as a miscarriage.\n\n"
-            "Would you like information about safe abortion with pills?"
-        ),
-        buttons=[{"id": "pills_yes", "title": "Yes"}, {"id": "pills_no", "title": "No"}]
-    )
+    ask_buttons(s, "pills_offer", ["pills_yes", "pills_no"])
 
 
 def on_pills_offer(s, oid, value):
     if oid == "pills_no":
-        send_text(s["phone"], f"No problem, {name_of(s)}.")
         go(s, "HELP")
     else:
         go(s, "CONFIRMATION")
@@ -614,16 +592,7 @@ def on_pills_offer(s, oid, value):
 
 # ----- STAGE 2: UNDERSTANDING HER SITUATION ----------------------------------
 def ask_confirmation(s):
-    # 2.1 How the pregnancy was confirmed
-    send_buttons(
-        s["phone"],
-        body_text=f"Can you tell us how the pregnancy was confirmed, {name_of(s)}?",
-        buttons=[
-            {"id": "conf_test", "title": "Pregnancy test"},
-            {"id": "conf_scan", "title": "Ultrasound (scan)"},
-            {"id": "conf_missed", "title": "Missed period only"}
-        ]
-    )
+    ask_buttons(s, "confirmation", ["conf_test", "conf_scan", "conf_missed"])
 
 
 def on_confirmation(s, oid, value):
@@ -632,11 +601,7 @@ def on_confirmation(s, oid, value):
 
 
 def ask_lmp(s):
-    if s["data"].get("confirmation_method") == "Ultrasound (scan)":
-        send_text(s["phone"], "What did the scan result say, and how many weeks? Also, what was the first day of your last menstrual period (an approximate date is fine)?")
-    else:
-        # 2.2 Length of pregnancy
-        send_text(s["phone"], "What was the first day of the last menstrual period? An approximate date is fine.")
+    say(s, "lmp_scan" if s["data"].get("confirmation_method") == "Ultrasound (scan)" else "lmp")
 
 
 def on_lmp(s, oid, value):
@@ -645,19 +610,7 @@ def on_lmp(s, oid, value):
 
 
 def ask_preference(s):
-    # 2.3 Preference: pills or clinic procedure
-    send_buttons(
-        s["phone"],
-        body_text=(
-            "Some women prefer abortion with pills at home. Others prefer MVA, a short procedure in a clinic. "
-            f"Do you already know which one you prefer, {name_of(s)}?"
-        ),
-        buttons=[
-            {"id": "pref_pills", "title": "Pills"},
-            {"id": "pref_mva", "title": "MVA in a clinic"},
-            {"id": "pref_both", "title": "Hear about both"}
-        ]
-    )
+    ask_buttons(s, "preference", ["pref_pills", "pref_mva", "pref_both"])
 
 
 def on_preference(s, oid, value):
@@ -666,35 +619,20 @@ def on_preference(s, oid, value):
 
 
 def ask_health(s):
-    # 2.4 Health questions
-    send_buttons(
-        s["phone"],
-        body_text=(
-            f"Can we ask a few health questions, {name_of(s)}?\n\n"
-            "- Do you have any health problems or allergies?\n"
-            "- Are you taking any medication?\n"
-            "- Do you have an IUD (coil)?"
-        ),
-        buttons=[{"id": "health_no", "title": "No to all"}, {"id": "health_yes", "title": "I have some"}]
-    )
+    ask_buttons(s, "health", ["health_no", "health_yes"])
 
 
 def on_health(s, oid, value):
     if oid == "health_yes":
-        # 2.4a If health problem reported
-        send_text(s["phone"], (
-            "Thank you for telling us. An early abortion with pills is safer than continuing a pregnancy and giving birth, "
-            "and for some health conditions pregnancy can make the condition worse.\n\n"
-            "Women with health problems can still use the pills. They are advised to have someone with them and to be near medical care in case of a complication."
-        ))
-        go(s, "HEALTH_DETAILS")
+        send_text(s["phone"], t(s, "health_yes") + "\n\n" + t(s, "health_details"))
+        s["step"] = "HEALTH_DETAILS"
     else:
         s["data"]["health_issues"] = "None reported"
         go(s, "SUPPORT")
 
 
 def ask_health_details(s):
-    send_text(s["phone"], "Please briefly mention any specific condition, medication, or if you have an IUD:")
+    say(s, "health_details")
 
 
 def on_health_details(s, oid, value):
@@ -703,14 +641,7 @@ def on_health_details(s, oid, value):
 
 
 def ask_support(s):
-    send_buttons(
-        s["phone"],
-        body_text=(
-            "The risk of complications is very low, but it can help to have someone for emotional support.\n\n"
-            f"Is there someone who can be with you during the abortion, and someone you can talk to about it, {name_of(s)}?"
-        ),
-        buttons=[{"id": "supp_yes", "title": "Yes, I have support"}, {"id": "supp_no", "title": "No, I am alone"}]
-    )
+    ask_buttons(s, "support", ["supp_yes", "supp_no"])
 
 
 def on_support(s, oid, value):
@@ -719,75 +650,47 @@ def on_support(s, oid, value):
 
 
 def ask_decision(s):
-    # 2.6 Her decision
-    send_buttons(
-        s["phone"],
-        body_text=(
-            f"Can we ask about your decision, {name_of(s)}? It is important that this choice is yours, made without pressure from anyone.\n\n"
-            "You are the only person who can judge your situation and make the best choice for your life.\n\n"
-            "Are you comfortable continuing to information on what is needed?"
-        ),
-        buttons=[{"id": "dec_continue", "title": "Yes, continue"}, {"id": "dec_questions", "title": "I have questions"}]
-    )
+    alone = s["data"].get("support_person") == "No, I am alone"
+    ask_buttons(s, "decision", ["dec_continue", "dec_questions"], prefix=t(s, "not_alone") if alone else "")
 
 
 def on_decision(s, oid, value):
-    name = name_of(s)
     if oid == "dec_questions":
         s["data"]["decision"] = "Has questions"
-        send_text(s["phone"], f"Of course, {name}. Please type your questions here and a counselor will reply to you directly.")
+        say(s, "decision_questions")
         hand_to_human(s)
     elif s["data"].get("preference") == "MVA in a clinic":
         s["data"]["decision"] = "Continue (MVA)"
-        send_text(s["phone"], f"Thank you, {name}. A counselor will share information about MVA and clinics with you here.")
+        say(s, "decision_mva")
         hand_to_human(s)
     else:
         s["data"]["decision"] = "Continue"
-        # 3.1 & 3.2 What is needed
-        send_text(s["phone"], (
-            "Research shows two effective methods:\n"
-            "1. *Mifepristone with misoprostol*: 1 mifepristone tablet (200 mg) and 4 misoprostol tablets (200 mcg each)\n"
-            "2. *Misoprostol alone*: 12 misoprostol tablets (200 mcg each)\n\n"
-            "Where to get pills: A counselor can discuss safe access options confidentially."
-        ))
+        say(s, "methods")
         go(s, "PLAN")
 
 
 # ----- STAGE 3 / 4: BEFORE THE ABORTION, USING THE PILLS ---------------------
 def ask_plan(s):
-    # 3.3 & 3.4 Planning and readiness
-    send_buttons(
-        s["phone"],
-        body_text=(
-            "While getting the pills, you can start making a plan for the day:\n"
-            "- Someone to give emotional support\n"
-            "- Childcare and other tasks arranged\n"
-            "- A time and place free of stress, ideally with a private bathroom\n"
-            "- Painkillers such as ibuprofen 400-600 mg ready in advance\n"
-            "- Think in advance about where to go if extra care is needed.\n\n"
-            "Do you have any questions so far?"
-        ),
-        buttons=[{"id": "plan_ready", "title": "Ready for steps"}, {"id": "plan_ask", "title": "I have a question"}]
-    )
+    ask_buttons(s, "plan", ["plan_ready", "plan_ask"])
 
 
 def on_plan(s, oid, value):
     if oid == "plan_ask":
         # The AI answers typed questions; this button means she wants to write one.
-        send_text(s["phone"], f"Please type your question, {name_of(s)}.")
+        say(s, "plan_ask")
         s["step"] = "PLAN_QUESTION"
     else:
         go(s, "METHOD")
 
 
 def ask_plan_question(s):
-    send_text(s["phone"], "Please type your question, or type *ready* to continue to the steps.")
+    say(s, "plan_question_reask")
 
 
 def on_plan_question(s, oid, value):
     # Questions are answered by the AI first. If the AI is off, a counselor takes the question.
     if looks_like_question(value):
-        send_text(s["phone"], "Thank you. A counselor will answer your question here directly.")
+        say(s, "plan_question_human")
         s["data"]["questions_asked"] = value[:200]
         hand_to_human(s)
     else:
@@ -795,70 +698,40 @@ def on_plan_question(s, oid, value):
 
 
 def ask_method(s):
-    # 4.1 & Method selection
-    send_buttons(
-        s["phone"],
-        body_text=(
-            "The next messages explain how the pills are used. It helps to have a pen and paper to write the steps down.\n\n"
-            "Which pills will you be using?"
-        ),
-        buttons=[{"id": "m_miso_only", "title": "Misoprostol alone"}, {"id": "m_combo", "title": "Mife + Misoprostol"}]
-    )
+    ask_buttons(s, "method", ["m_miso_only", "m_combo"])
 
 
 def on_method(s, oid, value):
     if oid == "m_combo":
         s["data"]["pill_choice"] = "Mifepristone + Misoprostol"
-        steps_text = (
-            "*How to take Mifepristone with Misoprostol (1 + 4 pills):*\n\n"
-            "Step 1: Swallow 1 mifepristone tablet (200 mg) with a glass of water.\n\n"
-            "Step 2: 24 hours later, put 4 misoprostol pills (200 mcg each) between the gum and cheek (2 on left, 2 on right). "
-            "Leave them there for 30 minutes to dissolve. After 30 minutes, swallow whatever remains."
-        )
+        steps = t(s, "steps_combo")
     else:
         s["data"]["pill_choice"] = "Misoprostol alone"
-        steps_text = (
-            "*How to take Misoprostol alone (12 pills total):*\n"
-            "The most effective way is to put 4 pills under the tongue every 3 hours, 3 times.\n\n"
-            "Step 1: Put 4 pills under the tongue. Do not swallow for 30 minutes while they dissolve. After 30 mins, swallow what is left.\n"
-            "Step 2: 3 hours later, put another 4 pills under the tongue for 30 minutes.\n"
-            "Step 3: 3 hours later, put the last 4 pills under the tongue for 30 minutes."
-        )
-    send_text(s["phone"], steps_text)
-    # 4.3 Eating/drinking & 4.5 - 4.7 Symptoms
-    send_text(s["phone"], (
-        "📌 *Important rules & what to expect:*\n"
-        "- Do not eat or drink during the 30 minutes while pills are dissolving. Normal eating/drinking before and after is fine.\n"
-        "- Normal side effects: cramps, chills, mild fever, nausea, diarrhea.\n"
-        "- Bleeding usually starts 2 to 4 hours after misoprostol. Heaviest bleeding lasts 1 to 4 hours with clots, then eases.\n"
-        "- Pain relief: Ibuprofen 600 mg can be taken after the first misoprostol dose."
-    ))
-    go(s, "UNDERSTANDING")
+        steps = t(s, "steps_miso")
+    send_text(s["phone"], steps)
+    send_text(s["phone"], t(s, "good_to_know") + "\n\n" + t(s, "understanding"))
+    s["step"] = "UNDERSTANDING"
 
 
 def ask_understanding(s):
-    send_text(s["phone"], "Can you tell us, in your own words, how the pills are taken? Do you have any doubts?")
+    say(s, "understanding")
 
 
 def on_understanding(s, oid, value):
     s["data"]["understanding"] = value
-    send_warning_signs(s["phone"])
+    s["warning_intro_done"] = False
     go(s, "WARN_CHECK")
 
 
 # ----- STAGE 5: SIGNS OF COMPLICATION ----------------------------------------
 def ask_warn_check(s):
-    # 5.4 Check understanding
-    send_buttons(
-        s["phone"],
-        body_text="Are the 4 warning signs clear to you?",
-        buttons=[{"id": "warn_clear", "title": "Yes, all clear"}, {"id": "warn_repeat", "title": "Please repeat"}]
-    )
+    intro = "warning_again" if s.get("warning_intro_done") else "warning_intro"
+    s["warning_intro_done"] = True
+    ask_buttons(s, "warning_signs", ["warn_clear", "warn_repeat"], prefix=t(s, intro) + "\n\n")
 
 
 def on_warn_check(s, oid, value):
     if oid == "warn_repeat":
-        send_warning_signs(s["phone"])
         ask(s)
     else:
         go(s, "CONTRACEPTION")
@@ -866,95 +739,41 @@ def on_warn_check(s, oid, value):
 
 # ----- STAGE 6: AFTER THE ABORTION & CONTRACEPTION ---------------------------
 def ask_contraception(s):
-    send_buttons(
-        s["phone"],
-        body_text=(
-            "📌 *After the abortion:*\n"
-            "- Bleeding decreases gradually and can continue 1 to 3 weeks.\n"
-            "- Normal period usually returns in 4 to 6 weeks.\n"
-            "- Precaution: Do not put anything in the vagina (no sex, tampons, baths) for the first 2 to 3 days.\n"
-            "- Confirming success: Take a pregnancy test in 3 to 4 weeks (a test done earlier can show a false positive).\n\n"
-            "You can get pregnant again immediately after an abortion.\n"
-            "Would you like information about contraception?"
-        ),
-        buttons=[{"id": "contra_yes", "title": "Yes"}, {"id": "contra_no", "title": "No, thank you"}]
-    )
+    ask_buttons(s, "after", ["contra_yes", "contra_no"])
 
 
 def on_contraception(s, oid, value):
     s["data"]["contraception_info"] = value
     if oid == "contra_yes":
-        send_stage_6_3_contraception(s["phone"])
+        say(s, "contraception_info")
     go(s, "FOLLOWUP")
 
 
 # ----- STAGE 7: CLOSING AND FOLLOW-UP ----------------------------------------
 def ask_followup(s):
-    send_text(s["phone"], (
-        f"Do you have any other question or concern, {name_of(s)}?\n\n"
-        "Would you like us to check in with you later? If yes, please tell us which day and time is safe to message."
-    ))
+    say(s, "followup")
 
 
 def on_followup(s, oid, value):
     s["data"]["followup_time"] = value
-    send_text(s["phone"], (
-        f"Thank you, {name_of(s)}. We have noted that. "
-        "You can always write to Aunty Queen again whenever you have questions or worries. "
-        "We wish you the very best. Take good care.\n\n"
-        "— *A counselor is available here if you need any further human support.*"
-    ))
+    say(s, "closing")
     hand_to_human(s, status="completed")
 
 
 # ----- Option 2: already used the pills --------------------------------------
 def ask_triage(s):
-    send_buttons(
-        s["phone"],
-        body_text=(
-            f"{name_of(s)}, are you experiencing any of these 4 warning signs right now?\n"
-            "1. Soaking 2+ pads/hour for 2 hours\n"
-            "2. Severe pain unrelieved by painkillers\n"
-            "3. Bad-smelling vaginal discharge\n"
-            "4. Fever over 38°C"
-        ),
-        buttons=[{"id": "warn_report_yes", "title": "Yes, I have them"}, {"id": "warn_report_no", "title": "No, I do not"}]
-    )
+    ask_buttons(s, "triage", ["warn_report_yes", "warn_report_no"])
 
 
 def on_triage(s, oid, value):
     if oid == "warn_report_yes":
         s["data"]["warning_signs"] = "YES"
-        send_text(s["phone"], URGENT_TEXT)
+        say(s, "urgent")
         hand_to_human(s, status="URGENT")
     else:
         s["data"]["warning_signs"] = "No"
-        send_text(s["phone"], f"Thank you for confirming, {name_of(s)}. A counselor will review your symptoms with you directly.")
+        say(s, "triage_no")
         hand_to_human(s)
-
-
-# ----- Reusable blocks -------------------------------------------------------
-def send_warning_signs(sender_id):
-    # 5.1, 5.2, 5.3 The four warning signs
-    send_text(sender_id, (
-        "Thank you. Now, here are the *4 Warning Signs of Complication* to always remember:\n\n"
-        "1. *Too much bleeding*: soaking more than 2 maxi pads per hour for 2 or 3 consecutive hours, or bleeding like an open tap.\n"
-        "2. *Severe pain* that painkillers do not relieve.\n"
-        "3. *Bad-smelling* vaginal discharge.\n"
-        "4. *Fever* over 38°C for more than 24 hours, or over 39°C at any time.\n\n"
-        "🏥 *Getting care*: Any complication is treated exactly like a miscarriage. A woman can always go to any clinic and say she had a miscarriage."
-    ))
-
-
-def send_stage_6_3_contraception(sender_id):
-    send_text(sender_id, (
-        "*Contraception Methods (6.3a):*\n\n"
-        "- *Pill, patch, injection, implant*: Can be started up to 5 days after taking misoprostol and protect immediately.\n"
-        "- *Vaginal ring*: Can be inserted as soon as 2 or 3 days after misoprostol.\n"
-        "- *IUD*: Inserted once complete abortion is confirmed, or during the next period.\n"
-        "- *Condoms, barrier methods*: Can be used as soon as sex is resumed.\n"
-        "- *Fertility awareness*: Once regular cycles return."
-    ))
 
 
 YES = ["yes", "oui", "ok", "yeah", "yep", "sure", "d'accord"]
