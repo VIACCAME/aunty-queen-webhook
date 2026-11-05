@@ -669,7 +669,7 @@ def handle_answer(session, user_input, button_id):
         return
 
     if not option_id and text:
-        option_id = match_option(step, text)
+        option_id = match_option(step, text) or (age_option(text) if step == "AGE" else None)
         # With the AI on, every typed message that isn't an exact button choice is checked, so questions
         # are caught however they are phrased. Without the AI, only obvious questions/danger words are.
         needs_ai = (not option_id) if ai.AI_API_KEY else (
@@ -683,6 +683,10 @@ def handle_answer(session, user_input, button_id):
             )
             kind = (result or {}).get("kind")
             reply = (result or {}).get("reply", "")
+            if kind in ("answer", "unclear") and not option_ids and looks_like_question(text):
+                # A typed question must never be saved as her name, city, etc.
+                print(f"[AI] {step}: question came back as '{kind}', not saving it as the answer")
+                result, kind = None, None
 
             if result is None and looks_like_question(text):
                 # The AI is down or busy: don't say "I didn't understand" to a real question.
@@ -837,8 +841,23 @@ def save_profile(field):
     return on_answer
 
 
+AGE_RANGES = ("age_u18", "age_18_24", "age_25_34", "age_35_44", "age_45")
+
+
 def ask_age(s):
-    send_text(s["phone"], intro(s) + t(s, "age"))
+    lang = lang_of(s)
+    rows = [{"id": i, "title": BUTTONS[i][lang]} for i in AGE_RANGES]
+    send_list(s["phone"], intro(s) + t(s, "age"), MESSAGES["heard_button"][lang], rows)
+
+
+def age_option(text):
+    """A typed age like "22" or "I am 22" -> its range, so she doesn't have to use the list."""
+    m = re.fullmatch(r"\D{0,12}?(\d{1,2})\s*(ans|years?( old)?|yrs?)?\W*", text.strip().lower())
+    if not m:
+        return None
+    age = int(m.group(1))
+    return ("age_u18" if age < 18 else "age_18_24" if age < 25 else "age_25_34" if age < 35
+            else "age_35_44" if age < 45 else "age_45")
 
 
 def ask_gender(s):
@@ -1091,7 +1110,12 @@ NO = ["no", "non", "nope", "nah"]
 
 # options: (button id, title, typed keywords that pick it)
 STEPS = {
-    "AGE": {"ask": ask_age, "on_answer": save_profile("age"), "question": "How old are you?"},
+    "AGE": {"ask": ask_age, "on_answer": save_profile("age"), "question": "What is your age range?",
+            "options": [("age_u18", "Under 18", ["under", "moins"]),
+                        ("age_18_24", "18-24", ["18-24"]),
+                        ("age_25_34", "25-34", ["25-34"]),
+                        ("age_35_44", "35-44", ["35-44"]),
+                        ("age_45", "45 or older", ["45+", "older", "plus"])]},
     "GENDER": {"ask": ask_gender, "on_answer": save_profile("gender"), "question": "How do you identify: woman, man or other?",
                "options": [("gen_woman", "Woman", ["woman", "female", "femme", "f", "girl", "fille"]),
                            ("gen_man", "Man", ["man", "male", "homme", "m", "boy", "garçon"]),
