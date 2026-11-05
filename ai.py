@@ -1,6 +1,6 @@
 """Free-text helper: answers side questions during the intake, then the bot re-asks the current question.
 
-Uses any OpenAI-compatible chat API. Default is Groq's free tier.
+Uses any OpenAI-compatible chat API. Default is Groq's free tier (model openai/gpt-oss-120b).
 For Gemini: AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai and AI_MODEL=gemini-3.5-flash.
 Only the client's message and the current question are sent. No phone number or name.
 """
@@ -12,9 +12,15 @@ import requests
 
 AI_API_KEY = os.environ.get("AI_API_KEY")
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
-AI_MODEL = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+# Groq retired llama-3.3-70b-versatile on 16 Aug 2026; gpt-oss-120b is its replacement.
+AI_MODEL = os.environ.get("AI_MODEL", "openai/gpt-oss-120b")
 # Tried in order when the main model is busy (429/503) or slow. Defaults suit Gemini's free tier.
-_default_fallback = "gemini-3.5-flash-lite,gemini-flash-lite-latest" if "googleapis" in AI_BASE_URL else ""
+if "googleapis" in AI_BASE_URL:
+    _default_fallback = "gemini-3.5-flash-lite,gemini-flash-lite-latest"
+elif "groq.com" in AI_BASE_URL:
+    _default_fallback = "openai/gpt-oss-20b"
+else:
+    _default_fallback = ""
 AI_FALLBACK_MODELS = [m.strip() for m in os.environ.get("AI_FALLBACK_MODELS", _default_fallback).split(",") if m.strip()]
 
 
@@ -29,6 +35,15 @@ def chat(messages, json_mode=False, timeout=20):
         try:
             r = requests.post(f"{AI_BASE_URL}/chat/completions", json=body, timeout=timeout,
                               headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"})
+            if r.status_code == 400 and json_mode and "response_format" in body:
+                # Some models don't support JSON mode: ask again without it (the prompt still asks for JSON).
+                print(f"[AI] {model} rejected JSON mode, retrying without it")
+                body.pop("response_format")
+                r = requests.post(f"{AI_BASE_URL}/chat/completions", json=body, timeout=timeout,
+                                  headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"})
+            if r.status_code in (404,):
+                print(f"[AI error] {model}: model not found (retired?). Set AI_MODEL in Render.")
+                continue
             if r.status_code in (429, 500, 502, 503, 504):
                 print(f"[AI busy] {model}: {r.status_code}")
                 time.sleep(0.6 if i == 0 else 0.2)
@@ -133,7 +148,9 @@ def classify(current_question, options, message, language="en"):
     if not text:
         return None
     try:
-        result = json.loads(text.strip().removeprefix("```json").removesuffix("```").strip())
+        raw = text.strip()
+        raw = raw[raw.find("{"): raw.rfind("}") + 1] if "{" in raw else raw
+        result = json.loads(raw)
         if result.get("kind") not in ("answer", "question", "urgent", "human", "unclear"):
             return None
         valid_ids = {oid for oid, _ in options or []}
