@@ -17,6 +17,8 @@ E = html.escape
 # Stats
 # ----------------------------------------------------------------------------
 def age_bucket(value):
+    if re.search(r"under|moins", str(value or ""), re.I):
+        return "Under 18"
     m = re.search(r"\d{1,2}", str(value or ""))
     if not m:
         return "Not given"

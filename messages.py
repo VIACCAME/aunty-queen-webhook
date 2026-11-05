@@ -75,8 +75,8 @@ MESSAGES = {
         ),
     },
     "age": {
-        "en": "How old are you?",
-        "fr": "Quel âge as-tu ?",
+        "en": "What is your age range? Tap *Choose* to pick one.",
+        "fr": "Quelle est ta tranche d'âge ? Appuie sur *Choisir* pour en sélectionner une.",
     },
     "gender": {
         "en": "How do you identify?",
@@ -634,6 +634,11 @@ BUTTONS = {
     "edu_secondary": {"en": "Secondary", "fr": "Secondaire"},
     "edu_higher": {"en": "University / higher", "fr": "Université"},
     # List rows (max 24 characters)
+    "age_u18": {"en": "Under 18", "fr": "Moins de 18 ans"},
+    "age_18_24": {"en": "18-24", "fr": "18-24 ans"},
+    "age_25_34": {"en": "25-34", "fr": "25-34 ans"},
+    "age_35_44": {"en": "35-44", "fr": "35-44 ans"},
+    "age_45": {"en": "45 or older", "fr": "45 ans ou plus"},
     "heard_friend": {"en": "Friend or family", "fr": "Ami(e) ou famille"},
     "heard_social": {"en": "Social media", "fr": "Réseaux sociaux"},
     "heard_radio": {"en": "Radio or TV", "fr": "Radio ou télé"},

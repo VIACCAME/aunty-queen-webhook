@@ -48,8 +48,16 @@ def chat(messages, json_mode=False, timeout=20):
                 print(f"[AI busy] {model}: {r.status_code}")
                 time.sleep(0.6 if i == 0 else 0.2)
                 continue
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"]
+            if r.status_code >= 400:
+                print(f"[AI error] {model}: {r.status_code} {r.text[:300]}")
+                continue
+            choice = r.json()["choices"][0]
+            content = (choice.get("message") or {}).get("content")
+            if not content:
+                print(f"[AI error] {model}: empty reply (finish_reason={choice.get('finish_reason')})")
+                continue
+            print(f"[AI ok] {model}")
+            return content
         except Exception as e:
             print(f"[AI error] {model}: {e}")
     return None
@@ -138,6 +146,7 @@ def summarize(data, status=""):
 def classify(current_question, options, message, language="en"):
     """Returns a dict like {"kind", "option_id", "value", "reply"}, or None if AI is off or fails."""
     if not AI_API_KEY:
+        print("[AI off] AI_API_KEY is empty in Render, so side questions can't be answered")
         return None
     opts = "\n".join(f"- {oid}: {title}" for oid, title in options) if options else "(free text answer)"
     user = (
@@ -146,17 +155,20 @@ def classify(current_question, options, message, language="en"):
     )
     text = chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}], json_mode=True)
     if not text:
+        print("[AI error] no model answered")
         return None
     try:
         raw = text.strip()
         raw = raw[raw.find("{"): raw.rfind("}") + 1] if "{" in raw else raw
         result = json.loads(raw)
         if result.get("kind") not in ("answer", "question", "urgent", "human", "unclear"):
+            print(f"[AI error] unexpected kind: {str(result.get('kind'))[:40]}")
             return None
         valid_ids = {oid for oid, _ in options or []}
         if result.get("option_id") not in valid_ids:
             result["option_id"] = None
         result["reply"] = (result.get("reply") or "")[:900]
+        print(f"[AI] kind={result['kind']} reply={'yes' if result['reply'] else 'no'}")
         return result
     except Exception as e:
         print(f"[AI error]: {e}")
