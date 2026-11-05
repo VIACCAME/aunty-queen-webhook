@@ -11,7 +11,13 @@
  *
  * Tabs created automatically:
  *   Intakes  - one row per intake, updated after every answer (download via File > Download)
+ *   Contacts - one row per person: profile, first/last contact, broadcast opt-out
+ *   Messages - every message in and out, with time (the full chat history)
+ *   Imported - rows uploaded from old Excel/CSV files on the dashboard
  *   Sessions - bot memory so conversations survive restarts (do not edit by hand)
+ *
+ * After changing this file: Deploy > Manage deployments > Edit (pencil) > Version: New version > Deploy.
+ * The /exec URL stays the same.
  */
 
 function doPost(e) {
@@ -41,6 +47,31 @@ function doPost(e) {
     if (body.action === 'get_session') {
       var row = findRow('Sessions', 'phone', String(body.phone));
       return json({ ok: true, session: row ? JSON.parse(row.session_json) : null });
+    }
+    if (body.action === 'upsert_contact') {
+      upsertRow('Contacts', 'phone', body.row);
+      return json({ ok: true });
+    }
+    if (body.action === 'get_contact') {
+      return json({ ok: true, contact: findRow('Contacts', 'phone', String(body.phone)) });
+    }
+    if (body.action === 'log_messages') {
+      appendRows('Messages', ['time', 'phone', 'direction', 'text', 'step', 'intake_id'], body.rows || []);
+      return json({ ok: true });
+    }
+    if (body.action === 'import_rows') {
+      var rows = body.rows || [];
+      var cols = ['import_batch', 'imported_at'];
+      rows.forEach(function (r) { Object.keys(r).forEach(function (k) { if (cols.indexOf(k) === -1) cols.push(k); }); });
+      appendRows('Imported', cols, rows);
+      return json({ ok: true, imported: rows.length });
+    }
+    if (body.action === 'dashboard_data') {
+      return json({ ok: true, intakes: allRows('Intakes'), contacts: allRows('Contacts'), imported: allRows('Imported') });
+    }
+    if (body.action === 'messages_for') {
+      var msgs = allRows('Messages').filter(function (m) { return String(m.phone).replace("'", '') === String(body.phone); });
+      return json({ ok: true, messages: msgs.slice(-300) });
     }
     // Old bot format (no action): append as a row so nothing is lost.
     if (!body.action) {
@@ -125,4 +156,39 @@ function upsertRow(name, keyField, row) {
     return (h === 'phone' || h === 'lmp') ? "'" + v : v;
   });
   sheet.getRange(rowIndex, 1, 1, headers.length).setValues([out]);
+}
+
+function allRows(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getDataRange().getDisplayValues();
+  var headers = values[0];
+  var out = [];
+  for (var r = 1; r < values.length; r++) {
+    var obj = {};
+    headers.forEach(function (h, i) { obj[h] = values[r][i]; });
+    out.push(obj);
+  }
+  return out;
+}
+
+// Append many rows at once; adds any new columns to the header row first.
+function appendRows(name, firstCols, rows) {
+  if (!rows.length) return;
+  var sheet = getSheet(name, firstCols[0]);
+  var headers = headersOf(sheet).filter(function (h) { return h !== ''; });
+  firstCols.concat(rows.reduce(function (acc, r) { return acc.concat(Object.keys(r)); }, [])).forEach(function (k) {
+    if (headers.indexOf(k) === -1) {
+      headers.push(k);
+      sheet.getRange(1, headers.length).setValue(k);
+    }
+  });
+  var data = rows.map(function (r) {
+    return headers.map(function (h) {
+      var v = (h in r) ? r[h] : '';
+      return (h === 'phone' && v !== '') ? "'" + v : v;
+    });
+  });
+  sheet.getRange(sheet.getLastRow() + 1, 1, data.length, headers.length).setValues(data);
 }

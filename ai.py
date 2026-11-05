@@ -71,6 +71,43 @@ KNOWLEDGE:
 """ + KNOWLEDGE
 
 
+SUMMARY_PROMPT = """You write short case notes for counselors at the Aunty Queen Hotline (Cameroon).
+You get one client's intake answers as JSON. Write 2 to 4 short lines in English for the counselor:
+who she is (age, town, gender if not a woman), what she needs, her situation (weeks / last period, method or
+preference, health issues, support), anything urgent, and the next action for the counselor
+(for example: prepare a misoprostol-only pack, prepare mifepristone + misoprostol, refer for MVA, call back
+at the agreed time, check warning signs). Facts only from the JSON, no invented details, no judgement.
+Plain text, no markdown, at most 400 characters."""
+
+
+def summarize(data, status=""):
+    """A short counselor note for one intake, or "" if AI is off or fails."""
+    if not AI_API_KEY:
+        return ""
+    # No name or phone is sent to the AI.
+    fields = {k: v for k, v in (data or {}).items() if v not in ("", None) and k not in ("consent", "name")}
+    fields["status"] = status
+    try:
+        r = requests.post(
+            f"{AI_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": AI_MODEL,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": SUMMARY_PROMPT},
+                    {"role": "user", "content": json.dumps(fields, ensure_ascii=False)[:3000]},
+                ],
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        return (r.json()["choices"][0]["message"]["content"] or "").strip()[:500]
+    except Exception as e:
+        print(f"[AI summary error]: {e}")
+        return ""
+
+
 def classify(current_question, options, message, language="en"):
     """Returns a dict like {"kind", "option_id", "value", "reply"}, or None if AI is off or fails."""
     if not AI_API_KEY:

@@ -29,7 +29,8 @@ MESSAGES = {
             "including safe abortion, using World Health Organization guidance. No judgement here, ever.\n\n"
             "🔒 *This chat is private.* What you share stays with our team and is only used to help you. "
             "If someone else can see your phone, you can turn on disappearing messages or delete this chat when we finish.\n\n"
-            "To help you properly, I'll need to ask you a few personal questions. Is that alright with you?"
+            "To help you properly, I'll need to ask you a few personal questions. Is that alright with you?\n\n"
+            "💡 _Tip: type *menu* at any time to change language, talk to a person, or start again._"
         ),
         "fr": (
             "Merci, ma chérie 💛 Chez Aunty Queen, nous parlons librement de santé sexuelle et reproductive, "
@@ -37,7 +38,8 @@ MESSAGES = {
             "Ici, personne ne te juge.\n\n"
             "🔒 *Cette conversation est privée.* Ce que tu partages reste avec notre équipe et sert uniquement à t'aider. "
             "Si quelqu'un d'autre peut voir ton téléphone, tu peux activer les messages éphémères ou supprimer la conversation à la fin.\n\n"
-            "Pour bien t'aider, je vais te poser quelques questions personnelles. Ça te va ?"
+            "Pour bien t'aider, je vais te poser quelques questions personnelles. Ça te va ?\n\n"
+            "💡 _Astuce : écris *menu* à tout moment pour changer de langue, parler à une personne ou recommencer._"
         ),
     },
     "consent_what": {
@@ -61,6 +63,54 @@ MESSAGES = {
         "fr": "Comment veux-tu que je t'appelle ? N'importe quel prénom, pas forcément le vrai 😊",
     },
 
+    # ----- A few details about her (script 1.3a + gender, city, how she heard) -----
+    "demo_intro": {
+        "en": (
+            "Thank you, {name} 🌸 First, a few quick questions so we can serve women like you better. "
+            "Type *skip* for any question you'd rather not answer.\n\n"
+        ),
+        "fr": (
+            "Merci, {name} 🌸 D'abord, quelques petites questions pour mieux servir les femmes comme toi. "
+            "Écris *passer* pour toute question à laquelle tu préfères ne pas répondre.\n\n"
+        ),
+    },
+    "age": {
+        "en": "How old are you?",
+        "fr": "Quel âge as-tu ?",
+    },
+    "gender": {
+        "en": "How do you identify?",
+        "fr": "Comment t'identifies-tu ?",
+    },
+    "city": {
+        "en": "Which town or city do you live in?",
+        "fr": "Dans quelle ville ou localité vis-tu ?",
+    },
+    "education": {
+        "en": "What is the highest level of school you completed?",
+        "fr": "Quel est le plus haut niveau d'études que tu as terminé ?",
+    },
+    "pregnancies": {
+        "en": "How many times have you been pregnant, and how many children do you have? For example: *2 pregnancies, 1 child*",
+        "fr": "Combien de fois as-tu été enceinte, et combien d'enfants as-tu ? Par exemple : *2 grossesses, 1 enfant*",
+    },
+    "heard": {
+        "en": "Last one 😊 How did you hear about Aunty Queen?",
+        "fr": "Dernière question 😊 Comment as-tu entendu parler d'Aunty Queen ?",
+    },
+    "heard_button": {
+        "en": "Choose",
+        "fr": "Choisir",
+    },
+    "welcome_back": {
+        "en": "Welcome back, {name} 💛 It's good to hear from you again.",
+        "fr": "Bon retour, {name} 💛 Ça fait plaisir de te relire.",
+    },
+    "opt_out_ack": {
+        "en": "Done, we won't send you any more updates. You can still write to us any time 💛",
+        "fr": "C'est noté, nous ne t'enverrons plus de nouvelles. Tu peux toujours nous écrire quand tu veux 💛",
+    },
+
     # ----- How can we help ---------------------------------------------------
     "help_first": {
         "en": (
@@ -74,6 +124,22 @@ MESSAGES = {
         "fr": (
             "Enchantée, {name} 🌸\n\n"
             "Dis-moi, comment Aunty Queen peut t'aider aujourd'hui ? Réponds simplement avec le numéro :\n\n"
+            "1️⃣ L'avortement sécurisé avec des pilules\n"
+            "2️⃣ J'ai déjà pris les pilules et j'ai des questions\n"
+            "3️⃣ La contraception / planification familiale\n"
+            "4️⃣ Autre chose"
+        ),
+    },
+    "help_returning": {
+        "en": (
+            "How can Aunty Queen help you today? Just reply with the number:\n\n"
+            "1️⃣ Safe abortion with pills\n"
+            "2️⃣ I already took the pills and have questions\n"
+            "3️⃣ Family planning / contraception\n"
+            "4️⃣ Something else"
+        ),
+        "fr": (
+            "Comment Aunty Queen peut t'aider aujourd'hui ? Réponds simplement avec le numéro :\n\n"
             "1️⃣ L'avortement sécurisé avec des pilules\n"
             "2️⃣ J'ai déjà pris les pilules et j'ai des questions\n"
             "3️⃣ La contraception / planification familiale\n"
@@ -473,8 +539,30 @@ MESSAGES = {
         "fr": "Une de nos conseillères va continuer avec toi ici 💛",
     },
     "back_to_question": {
-        "en": "Now, back to where we were:",
-        "fr": "Bon, reprenons là où nous en étions :",
+        "en": "↩️ Now, let's pick up where we were:",
+        "fr": "↩️ Bon, reprenons là où nous en étions :",
+    },
+    "menu": {
+        "en": (
+            "Here's what I can do for you, {name} 💛\n\n"
+            "Choose an option below, or just type your answer to carry on where we were."
+        ),
+        "fr": (
+            "Voici ce que je peux faire pour toi, {name} 💛\n\n"
+            "Choisis une option ci-dessous, ou écris simplement ta réponse pour continuer là où nous en étions."
+        ),
+    },
+    "pick_language": {
+        "en": "Which language would you like?\nQuelle langue préfères-tu ?",
+        "fr": "Which language would you like?\nQuelle langue préfères-tu ?",
+    },
+    "language_switched": {
+        "en": "No problem, we'll continue in English 😊",
+        "fr": "Pas de souci, on continue en français 😊",
+    },
+    "restarting": {
+        "en": "Of course, let's start again from the beginning 🌸",
+        "fr": "Bien sûr, recommençons depuis le début 🌸",
     },
     "not_understood": {
         "en": "Sorry my dear, I didn't quite get that. Could you pick one of the options below?",
@@ -527,4 +615,23 @@ BUTTONS = {
     "contra_no": {"en": "No, thank you", "fr": "Non, merci"},
     "warn_report_yes": {"en": "Yes, I do", "fr": "Oui"},
     "warn_report_no": {"en": "No, I don't", "fr": "Non"},
+    "gen_woman": {"en": "Woman", "fr": "Femme"},
+    "gen_man": {"en": "Man", "fr": "Homme"},
+    "gen_other": {"en": "Other / rather not", "fr": "Autre / sans réponse"},
+    "edu_primary": {"en": "None or primary", "fr": "Aucun ou primaire"},
+    "edu_secondary": {"en": "Secondary", "fr": "Secondaire"},
+    "edu_higher": {"en": "University / higher", "fr": "Université"},
+    # List rows (max 24 characters)
+    "heard_friend": {"en": "Friend or family", "fr": "Ami(e) ou famille"},
+    "heard_social": {"en": "Social media", "fr": "Réseaux sociaux"},
+    "heard_radio": {"en": "Radio or TV", "fr": "Radio ou télé"},
+    "heard_web": {"en": "Website", "fr": "Site internet"},
+    "heard_health": {"en": "Health worker / clinic", "fr": "Agent de santé"},
+    "heard_other": {"en": "Other", "fr": "Autre"},
+    # Menu (works at any step)
+    "g_lang": {"en": "🌍 Change language", "fr": "🌍 Changer de langue"},
+    "g_human": {"en": "Talk to a person", "fr": "Parler à quelqu'un"},
+    "g_restart": {"en": "🔄 Start again", "fr": "🔄 Recommencer"},
+    "g_en": {"en": "English", "fr": "English"},
+    "g_fr": {"en": "Français", "fr": "Français"},
 }

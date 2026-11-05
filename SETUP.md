@@ -124,5 +124,39 @@ Steps:
 ## Wording and languages
 All bot texts, in English and French, are in `messages.py`. Edit the wording there; keep the medical facts (doses, timings, warning signs) exactly as in the protocol. The French texts use "tu" and **need review by the team** before going live.
 
+## Database, dashboard and broadcast
+**Database = the private Google Sheet** (step 2). After pasting the new `google_apps_script.gs`, redeploy it:
+Deploy → Manage deployments → Edit (pencil) → Version: **New version** → Deploy. The `/exec` URL stays the same.
+Tabs it fills in by itself:
+- **Intakes**: one row per conversation, with an AI **summary** for counselors when it ends
+- **Contacts**: one row per person (profile, first and last contact, STOP opt-out, last broadcast)
+- **Messages**: every message in and out (client, bot, counselor), with time
+- **Imported**: rows uploaded from old Excel/CSV files
+
+Render → Environment:
+
+| Key | Value |
+|---|---|
+| `GOOGLE_SHEET_WEBHOOK_URL` | the Apps Script `/exec` URL |
+| `SHEET_SECRET` | same value as the Script property |
+| `DASHBOARD_KEY` | a long password for the dashboard |
+| `BROADCAST_TEMPLATE` | (optional) the approved template name, pre-filled on the dashboard |
+| `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` | the AI (see `ai.py` for Gemini values) |
+
+**Dashboard:** `https://<render-url>/dashboard`. Stats, pill requests with summaries, chat history per person,
+Excel/CSV import, and the broadcast. Don't share screenshots: it shows health data.
+
+**Returning clients** get "welcome back" and skip the questions they already answered.
+**Counselor replies** pause the bot for that chat until a counselor sends `#bot`.
+**STOP** (or *arrêter*) opts a person out of broadcasts.
+
+**Broadcast template** (create in Infobip → Channels → WhatsApp → Templates, category *Utility* or *Marketing*,
+one per language; Meta approves it in about a day). Keep it neutral, it may be seen by someone else:
+- English, name `aunty_queen_checkin`: *Hello from Aunty Queen 💛 We're checking in with friends who wrote to us before. Reply HI to chat with us, or STOP if you'd rather not hear from us.*
+- French, same name, language French: *Bonjour de la part d'Aunty Queen 💛 Nous prenons des nouvelles des personnes qui nous ont écrit. Réponds HI pour discuter avec nous, ou STOP si tu préfères ne plus recevoir de messages.*
+
+The dashboard only sends to people who didn't reply STOP, haven't written in the last 7 days and
+got no broadcast in the last 30 days. Each template message costs about US$0.036 (marketing) or $0.006 (utility).
+
 ## Not done yet
 - **French review:** a French-speaking counselor should read every French text in `messages.py`.
