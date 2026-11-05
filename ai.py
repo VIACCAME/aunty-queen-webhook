@@ -102,9 +102,11 @@ Return only JSON: {"kind": ..., "option_id": ..., "value": ..., "reply": ...}
 kind is one of:
 - "answer": the message answers the current question. Set option_id to the matching option id if there are
   options, and value to the answer in a few words.
-- "question": the client asks something (how, what, why, when, can, will, is it…), even if it is about the
+- "question": the client asks something (how, what, why, when, can, will, is it…), even with no question
+  mark and even if it is about the
   same topic as the current question or comes before agreeing to it. A message that asks something is ALWAYS
-  "question", never "answer". Put a short, kind answer in reply.
+  "question", never "answer" or "unclear". Put a short, kind answer in reply.
+  Examples: "will it hurt a lot" -> question; "is it safe" -> question; "how many pills" -> question.
 - "urgent": the client describes a warning sign happening now (heavy bleeding, severe pain, bad-smelling
   discharge, high fever) or any emergency. reply: tell her to go to the nearest health facility now and that it
   is treated like a miscarriage.
@@ -141,6 +143,26 @@ def summarize(data, status=""):
     text = chat([{"role": "system", "content": SUMMARY_PROMPT},
                  {"role": "user", "content": json.dumps(fields, ensure_ascii=False)[:3000]}], timeout=30)
     return (text or "").strip()[:500]
+
+
+ANSWER_PROMPT = """You help the Aunty Queen Hotline WhatsApp assistant. A client asked the question below
+while answering intake questions. Answer it directly.
+
+Rules for reply:""" + SYSTEM_PROMPT.split("Rules for reply:")[1] + """
+Reply with the answer text only, no JSON. If the knowledge does not cover it, say a counselor will reply here."""
+
+
+def answer_question(message, language="en"):
+    """A direct answer to a side question (used when classify() didn't see it as one). Returns text or None."""
+    if not AI_API_KEY:
+        return None
+    lang = "French" if language == "fr" else "English"
+    text = chat([{"role": "system", "content": ANSWER_PROMPT},
+                 {"role": "user", "content": f"LANGUAGE: {lang}\nCLIENT QUESTION: {message[:1000]}"}])
+    text = (text or "").strip()
+    if text.startswith("{"):
+        return None
+    return text[:900] or None
 
 
 def classify(current_question, options, message, language="en"):

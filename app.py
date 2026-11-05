@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -18,6 +19,9 @@ import dashboard
 
 from onboarding import onboarding
 from privacy import privacy
+
+# Show each log line in Render straight away (otherwise prints wait for the next request).
+sys.stdout.reconfigure(line_buffering=True)
 
 app = Flask(__name__)
 app.register_blueprint(onboarding)
@@ -683,10 +687,15 @@ def handle_answer(session, user_input, button_id):
             )
             kind = (result or {}).get("kind")
             reply = (result or {}).get("reply", "")
-            if kind in ("answer", "unclear") and not option_ids and looks_like_question(text):
-                # A typed question must never be saved as her name, city, etc.
-                print(f"[AI] {step}: question came back as '{kind}', not saving it as the answer")
-                result, kind = None, None
+            if kind in ("answer", "unclear") and looks_like_question(text) and not (kind == "answer" and reply):
+                # It reads like a question but the AI didn't treat it as one: ask the AI to answer it directly.
+                # (A typed question must never be saved as her name, city, etc., or read as "not understood".)
+                print(f"[AI] {step}: question came back as '{kind}', asking the AI to answer it directly")
+                direct = ai.answer_question(text, data.get("language", "en"))
+                if direct:
+                    result, kind, reply = {"kind": "question", "reply": direct}, "question", direct
+                else:
+                    result, kind = None, None
 
             if result is None and looks_like_question(text):
                 # The AI is down or busy: don't say "I didn't understand" to a real question.
