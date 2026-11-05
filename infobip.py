@@ -69,6 +69,35 @@ def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text
     })
 
 
+def send_list(recipient_id, body_text, button_label, rows):
+    return _post("/whatsapp/1/message/interactive/list", {
+        "from": INFOBIP_SENDER,
+        "to": recipient_id,
+        "content": {
+            "body": {"text": body_text[:1024]},
+            "action": {
+                "title": button_label[:20],
+                "sections": [{"rows": [{"id": r["id"], "title": r["title"][:24]} for r in rows[:10]]}],
+            },
+        },
+    })
+
+
+def send_template(recipient_id, template_name, language_code):
+    """A Meta-approved template, registered in the Infobip portal (WhatsApp > Templates)."""
+    return _post("/whatsapp/1/message/template", {
+        "messages": [{
+            "from": INFOBIP_SENDER,
+            "to": recipient_id,
+            "content": {
+                "templateName": template_name,
+                "templateData": {"body": {"placeholders": []}},
+                "language": language_code,
+            },
+        }]
+    })
+
+
 def mark_as_read(message_id):
     if message_id:
         _post(f"/whatsapp/1/senders/{INFOBIP_SENDER}/message/{message_id}/read")

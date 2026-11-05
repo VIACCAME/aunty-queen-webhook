@@ -3,6 +3,7 @@ import hmac
 import os
 import re
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -11,7 +12,9 @@ import requests
 import ai
 import infobip
 from messages import MESSAGES, BUTTONS, DEFAULT_NAME
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, make_response
+
+import dashboard
 
 from onboarding import onboarding
 from privacy import privacy
@@ -79,6 +82,7 @@ def send_meta_request(payload):
 
 
 def send_text(recipient_id, text_body):
+    log_message(recipient_id, "bot", text_body)
     if USE_INFOBIP:
         return infobip.send_text(recipient_id, text_body)
     payload = {
@@ -93,6 +97,7 @@ def send_text(recipient_id, text_body):
 
 def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text=None):
     """WhatsApp button limits: max 3 buttons, max 20 chars title, max 1024 chars body."""
+    log_message(recipient_id, "bot", body_text + "  [" + " | ".join(b["title"] for b in buttons[:3]) + "]")
     if USE_INFOBIP:
         return infobip.send_buttons(recipient_id, body_text, buttons, header_text, footer_text)
     interactive_obj = {
@@ -118,6 +123,38 @@ def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text
         "interactive": interactive_obj
     }
     return send_meta_request(payload)
+
+
+def send_list(recipient_id, body_text, button_label, rows):
+    """A list message: up to 10 rows, row titles max 24 chars, button label max 20 chars."""
+    log_message(recipient_id, "bot", body_text + "  [" + " | ".join(r["title"] for r in rows[:10]) + "]")
+    if USE_INFOBIP:
+        return infobip.send_list(recipient_id, body_text, button_label, rows)
+    return send_meta_request({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": recipient_id,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": body_text[:1024]},
+            "action": {"button": button_label[:20], "sections": [{"title": button_label[:24], "rows": [
+                {"id": r["id"], "title": r["title"][:24]} for r in rows[:10]]}]},
+        },
+    })
+
+
+def send_template(recipient_id, template_name, language_code):
+    """A pre-approved WhatsApp template (needed to message someone outside the 24-hour window)."""
+    log_message(recipient_id, "bot", f"[template {template_name}]")
+    if USE_INFOBIP:
+        return infobip.send_template(recipient_id, template_name, language_code)
+    return send_meta_request({
+        "messaging_product": "whatsapp",
+        "to": recipient_id,
+        "type": "template",
+        "template": {"name": template_name, "language": {"code": language_code}},
+    })
 
 
 def mark_as_read(message_id):
@@ -146,6 +183,53 @@ def sheet_call(action, payload):
         return None
 
 
+def log_message(phone, direction, text, step=None, intake_id=None):
+    """Every message in and out goes to the Sheet's Messages tab (in the background, so replies stay fast)."""
+    if not GOOGLE_SHEET_WEBHOOK_URL or not phone:
+        return
+    row = {"time": now_iso(), "phone": phone, "direction": direction, "text": (text or "")[:2000],
+           "step": step or "", "intake_id": intake_id or ""}
+    threading.Thread(target=sheet_call, args=("log_messages", {"rows": [row]}), daemon=True).start()
+
+
+# Profile details kept per person, so returning clients aren't asked again.
+PROFILE_FIELDS = ("name", "language", "consent", "age", "gender", "city", "education", "pregnancies_children",
+                  "heard_from")
+contacts = {}
+
+
+def load_contact(phone):
+    if phone in contacts:
+        return contacts[phone]
+    result = sheet_call("get_contact", {"phone": phone}) or {}
+    contact = result.get("contact")
+    if contact:
+        contact = {k: (str(v).lstrip("'") if v is not None else "") for k, v in contact.items()}
+        contacts[phone] = contact
+    return contact
+
+
+def save_contact(phone, **fields):
+    contact = contacts.setdefault(phone, {"phone": phone})
+    contact.update({k: v for k, v in fields.items() if v not in (None, "")})
+    row = dict(contact, phone=phone)
+    threading.Thread(target=sheet_call, args=("upsert_contact", {"row": row}), daemon=True).start()
+
+
+def update_contact_from_session(session):
+    data = session.get("data", {})
+    fields = {k: data.get(k) for k in PROFILE_FIELDS if data.get(k) and data.get(k) != "Friend"}
+    existing = contacts.get(session["phone"]) or {}
+    save_contact(
+        session["phone"],
+        first_seen=existing.get("first_seen") or session.get("started_at"),
+        last_seen=now_iso(),
+        last_intake_id=session.get("intake_id"),
+        last_status=session.get("status"),
+        **fields,
+    )
+
+
 def save_intake(session, **extra):
     """Upsert this person's intake row. Called after every answer so partial intakes are kept."""
     row = {
@@ -159,6 +243,7 @@ def save_intake(session, **extra):
     row.update(session.get("data", {}))
     row.update(extra)
     sheet_call("upsert_intake", {"row": row})
+    update_contact_from_session(session)
 
 
 def load_session(phone):
@@ -300,11 +385,13 @@ def handle_staff_echo(echo):
     client = echo.get("to")
     if not client:
         return
-    text = (echo.get("text") or {}).get("body", "").strip().lower()
+    raw_text = (echo.get("text") or {}).get("body", "").strip()
+    text = raw_text.lower()
+    log_message(client, "counselor", raw_text)
     with lock_for(client):
         session = load_session(client) or new_session(client)
         if text in BOT_RESUME_COMMANDS:
-            # Next client message starts a fresh intake with the bot.
+            # Next client message goes to the bot again (returning clients skip the questions already answered).
             fresh = new_session(client)
             store_session(fresh)
             print(f"[handover] {client} returned to bot by staff")
@@ -313,7 +400,23 @@ def handle_staff_echo(echo):
             hand_to_human(session, status="taken_over_by_staff")
             save_intake(session)
             print(f"[handover] {client} taken over by staff")
+        # Every counselor message keeps the chat paused, so the bot never talks over a counselor.
         store_session(session)
+
+
+STOP_WORDS = {"stop", "unsubscribe", "arrêter", "arreter", "arrête", "arrete", "désabonner", "desabonner"}
+
+
+def start_new_conversation(phone):
+    """A fresh intake. Returning clients keep their profile, so they aren't asked the same questions again."""
+    session = new_session(phone)
+    contact = load_contact(phone)
+    if contact and contact.get("name") and contact.get("consent"):
+        for field in PROFILE_FIELDS:
+            if contact.get(field):
+                session["data"][field] = contact[field]
+        session["returning"] = True
+    return session
 
 
 def handle_client_message(msg):
@@ -328,12 +431,23 @@ def handle_client_message(msg):
         user_input = msg.get("text", {}).get("body", "").strip()
     elif msg_type == "interactive":
         interactive = msg.get("interactive", {})
-        if interactive.get("type") == "button_reply":
-            button_id = interactive["button_reply"]["id"]
-            user_input = interactive["button_reply"]["title"]
+        kind = interactive.get("type")
+        if kind in ("button_reply", "list_reply"):
+            button_id = interactive[kind]["id"]
+            user_input = interactive[kind]["title"]
+    log_message(sender_id, "client", user_input or f"[{msg_type}]")
 
     with lock_for(sender_id):
         session = load_session(sender_id)
+        low = user_input.strip().strip(".!").lower()
+
+        if low in STOP_WORDS:
+            save_contact(sender_id, opted_out="yes", opted_out_at=now_iso())
+            if session:
+                say(session, "opt_out_ack")
+            else:
+                send_text(sender_id, MESSAGES["opt_out_ack"]["en"] + "\n\n" + MESSAGES["opt_out_ack"]["fr"])
+            return
 
         if session and session.get("mode") == "human":
             last = session.get("updated_at") or session.get("started_at")
@@ -347,8 +461,9 @@ def handle_client_message(msg):
                 return
             session = None
 
-        if session is None or user_input.lower() in CLIENT_RESTART_WORDS:
-            session = new_session(sender_id)
+        if session is None or low in CLIENT_RESTART_WORDS or session.get("step") is None:
+            # A new conversation (also after a counselor sent #bot): returning clients keep their profile.
+            session = start_new_conversation(sender_id)
 
         if msg_type not in ("text", "interactive"):
             say(session, "typed_only")
@@ -356,7 +471,7 @@ def handle_client_message(msg):
             return
 
         mark_as_read(msg.get("id"))
-        if user_input.strip().lower() in DELETE_WORDS:
+        if low in DELETE_WORDS:
             # Promised in the privacy policy (/privacy#data-deletion); a counselor deletes the records.
             say(session, "delete_ack")
             hand_to_human(session, status="DELETION_REQUESTED")
@@ -364,14 +479,96 @@ def handle_client_message(msg):
             save_intake(session)
             return
         try:
-            if session["step"] is None:
+            if session["step"] is None and first_message_is_urgent(user_input):
+                # Don't make someone in danger pick a language first: answer in both, then a counselor takes over.
+                session["data"]["warning_signs"] = f"Reported: {user_input[:200]}"
+                send_text(session["phone"], MESSAGES["urgent"]["en"] + "\n\n— — —\n\n" + MESSAGES["urgent"]["fr"])
+                hand_to_human(session, status="URGENT")
+            elif session["step"] is None and session.get("returning"):
+                say(session, "welcome_back")
+                next_profile_step(session)
+            elif session["step"] is None:
                 go(session, "LANG")
-            else:
+            elif not handle_global(session, user_input, button_id):
                 handle_answer(session, user_input, button_id)
         except Exception as e:
             print(f"[ERROR in flow]: {e}")
         store_session(session)
         save_intake(session)
+        if session.get("mode") == "human" and not session.get("summarized"):
+            session["summarized"] = True
+            threading.Thread(target=summarize_intake, args=(dict(session, data=dict(session["data"])),),
+                             daemon=True).start()
+
+
+def summarize_intake(session):
+    """A short note for counselors (e.g. to prepare pills). Saved in the Intakes row as 'summary'."""
+    summary = ai.summarize(session.get("data", {}), session.get("status", ""))
+    if summary:
+        save_intake(session, summary=summary)
+
+
+def first_message_is_urgent(text):
+    """Danger words in the very first message: the AI double-checks; if the AI is off, assume urgent to be safe."""
+    if not text or not has_danger_words(text):
+        return False
+    result = ai.classify("(first message, no question asked yet)", [], text, "en")
+    return result is None or result.get("kind") == "urgent"
+
+
+# Typed alone at any step (whole message), these work like the menu buttons.
+MENU_WORDS = {"menu"}
+LANGUAGE_WORDS = {"language", "languages", "langue", "langues"}
+ENGLISH_WORDS = {"english", "anglais"}
+FRENCH_WORDS = {"français", "francais", "french"}
+HUMAN_WORDS = {"person", "human", "agent", "counselor", "counsellor", "conseillère", "conseillere",
+               "humain", "personne"}
+
+
+def handle_global(session, user_input, button_id):
+    """Menu actions that work at any step. Returns True if the message was handled here."""
+    low = user_input.strip().strip(".!?").lower()
+    at_lang_step = session["step"] == "LANG"
+
+    if button_id == "g_lang" or low in LANGUAGE_WORDS:
+        send_buttons(session["phone"], body_text=t(session, "pick_language"),
+                     buttons=buttons_for(session, "g_en", "g_fr"))
+        return True
+
+    target = None
+    if button_id == "g_en" or (low in ENGLISH_WORDS and not at_lang_step):
+        target = "en"
+    elif button_id == "g_fr" or (low in FRENCH_WORDS and not at_lang_step):
+        target = "fr"
+    if target:
+        session["data"]["language"] = target
+        if at_lang_step:
+            go(session, "CONSENT")
+        else:
+            say(session, "language_switched")
+            ask(session)
+        return True
+
+    if button_id == "g_human" or low in HUMAN_WORDS:
+        say(session, "human_handover")
+        hand_to_human(session)
+        return True
+
+    if button_id == "g_restart":
+        # Fresh intake, but keep the language she chose so she isn't asked again.
+        fresh = new_session(session["phone"])
+        fresh["data"]["language"] = lang_of(session)
+        session.clear()
+        session.update(fresh)
+        say(session, "restarting")
+        go(session, "CONSENT")
+        return True
+
+    if low in MENU_WORDS:
+        send_buttons(session["phone"], body_text=t(session, "menu"),
+                     buttons=buttons_for(session, "g_lang", "g_human", "g_restart"))
+        return True
+    return False
 
 
 # =============================================================================
@@ -434,6 +631,10 @@ def handle_answer(session, user_input, button_id):
     option_id = button_id if button_id in option_ids else None
     text = user_input
 
+    if step in dict(PROFILE_STEPS) and not option_id and text.strip(" .!").lower() in SKIP_WORDS:
+        spec["on_answer"](session, None, "Skipped")
+        return
+
     if not option_id and text:
         option_id = match_option(step, text)
         needs_ai = (option_ids and not option_id) or looks_like_question(text) or has_danger_words(text)
@@ -459,13 +660,12 @@ def handle_answer(session, user_input, button_id):
             if kind == "question":
                 session["ai_questions"] = session.get("ai_questions", 0) + 1
                 data["questions_asked"] = (data.get("questions_asked", "") + f" | {text[:200]}").strip(" |")
-                if reply:
-                    send_text(session["phone"], reply)
                 if session["ai_questions"] > AI_MAX_QUESTIONS:
-                    say(session, "ai_limit")
+                    send_text(session["phone"], (reply + "\n\n" if reply else "") + t(session, "ai_limit"))
                     hand_to_human(session)
                     return
-                say(session, "back_to_question")
+                # One message with the answer and a gentle "back to it", then the question again.
+                send_text(session["phone"], (reply + "\n\n" if reply else "") + t(session, "back_to_question"))
                 ask(session)
                 return
             if kind == "answer":
@@ -557,11 +757,71 @@ def ask_name(s):
 
 def on_name(s, oid, value):
     s["data"]["name"] = value[:60] if value else "Friend"
+    s["show_demo_intro"] = True
+    next_profile_step(s)
+
+
+# ----- A FEW DETAILS ABOUT HER (script 1.3a + gender, city, how she heard) -----
+PROFILE_STEPS = [("AGE", "age"), ("GENDER", "gender"), ("CITY", "city"), ("EDUCATION", "education"),
+                 ("PREGNANCIES", "pregnancies_children"), ("HEARD", "heard_from")]
+SKIP_WORDS = {"skip", "passer", "pass", "next", "suivant", "non merci", "no thanks"}
+
+
+def next_profile_step(s):
+    """Ask the first profile question she hasn't answered yet, then move on to how we can help."""
+    for step, field in PROFILE_STEPS:
+        if not s["data"].get(field):
+            go(s, step)
+            return
     go(s, "HELP")
 
 
+def intro(s):
+    return t(s, "demo_intro") if s.pop("show_demo_intro", False) else ""
+
+
+def save_profile(field):
+    def on_answer(s, oid, value):
+        s["data"][field] = (value or "Skipped")[:120]
+        next_profile_step(s)
+    return on_answer
+
+
+def ask_age(s):
+    send_text(s["phone"], intro(s) + t(s, "age"))
+
+
+def ask_gender(s):
+    ask_buttons(s, "gender", ["gen_woman", "gen_man", "gen_other"], prefix=intro(s))
+
+
+def ask_city(s):
+    send_text(s["phone"], intro(s) + t(s, "city"))
+
+
+def ask_education(s):
+    ask_buttons(s, "education", ["edu_primary", "edu_secondary", "edu_higher"], prefix=intro(s))
+
+
+def ask_pregnancies(s):
+    send_text(s["phone"], intro(s) + t(s, "pregnancies"))
+
+
+def ask_heard(s):
+    lang = lang_of(s)
+    rows = [{"id": i, "title": BUTTONS[i][lang]} for i in
+            ("heard_friend", "heard_social", "heard_radio", "heard_web", "heard_health", "heard_other")]
+    send_list(s["phone"], intro(s) + t(s, "heard"), MESSAGES["heard_button"][lang], rows)
+
+
 def ask_help(s):
-    say(s, "help_again" if s.get("help_seen") else "help_first")
+    if s.get("help_seen"):
+        key = "help_again"
+    elif s.get("returning"):
+        key = "help_returning"
+    else:
+        key = "help_first"
+    say(s, key)
     s["help_seen"] = True
 
 
@@ -781,6 +1041,26 @@ NO = ["no", "non", "nope", "nah"]
 
 # options: (button id, title, typed keywords that pick it)
 STEPS = {
+    "AGE": {"ask": ask_age, "on_answer": save_profile("age"), "question": "How old are you?"},
+    "GENDER": {"ask": ask_gender, "on_answer": save_profile("gender"), "question": "How do you identify: woman, man or other?",
+               "options": [("gen_woman", "Woman", ["woman", "female", "femme", "f", "girl", "fille"]),
+                           ("gen_man", "Man", ["man", "male", "homme", "m", "boy", "garçon"]),
+                           ("gen_other", "Other / rather not say", ["other", "autre", "non-binary", "prefer"])]},
+    "CITY": {"ask": ask_city, "on_answer": save_profile("city"), "question": "Which town or city do you live in?"},
+    "EDUCATION": {"ask": ask_education, "on_answer": save_profile("education"),
+                  "question": "Highest level of school completed: none/primary, secondary, or university?",
+                  "options": [("edu_primary", "None or primary", ["none", "primary", "primaire", "aucun", "cep"]),
+                              ("edu_secondary", "Secondary", ["secondary", "secondaire", "lycée", "lycee", "college", "collège", "bac", "gce"]),
+                              ("edu_higher", "University / higher", ["university", "université", "universite", "fac", "higher", "supérieur", "degree", "licence"])]},
+    "PREGNANCIES": {"ask": ask_pregnancies, "on_answer": save_profile("pregnancies_children"),
+                    "question": "How many pregnancies and how many children?"},
+    "HEARD": {"ask": ask_heard, "on_answer": save_profile("heard_from"), "question": "How did you hear about Aunty Queen?",
+              "options": [("heard_friend", "Friend or family", ["friend", "family", "ami", "amie", "famille", "sister", "soeur"]),
+                          ("heard_social", "Social media", ["social", "facebook", "tiktok", "instagram", "whatsapp", "réseaux", "reseaux"]),
+                          ("heard_radio", "Radio or TV", ["radio", "tv", "télé", "tele", "television"]),
+                          ("heard_web", "Website", ["website", "site", "internet", "google"]),
+                          ("heard_health", "Health worker or clinic", ["clinic", "clinique", "hospital", "hôpital", "nurse", "doctor", "médecin", "health"]),
+                          ("heard_other", "Other", ["other", "autre"])]},
     "LANG": {"ask": ask_lang, "on_answer": on_lang, "question": "Choose a language: English or French",
              "options": [("lang_en", "English", ["english", "anglais", "en"]),
                          ("lang_fr", "Français", ["français", "francais", "french", "fr"])]},
@@ -841,6 +1121,117 @@ STEPS = {
     "TRIAGE": {"ask": ask_triage, "on_answer": on_triage, "question": "Are you experiencing any of the 4 warning signs right now?",
                "options": [("warn_report_yes", "Yes, I have them", YES), ("warn_report_no", "No, I do not", NO)]},
 }
+
+
+# =============================================================================
+# DASHBOARD (counselors only; password = DASHBOARD_KEY)
+# =============================================================================
+DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "")
+BROADCAST_TEMPLATE = os.environ.get("BROADCAST_TEMPLATE", "")
+COOKIE = "aq_dash"
+
+
+def dashboard_token():
+    return hmac.new(DASHBOARD_KEY.encode(), b"aunty-queen-dashboard", hashlib.sha256).hexdigest()
+
+
+def dashboard_ok():
+    return bool(DASHBOARD_KEY) and hmac.compare_digest(request.cookies.get(COOKIE, ""), dashboard_token())
+
+
+def html_response(body, status=200):
+    return body, status, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+                          "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer"}
+
+
+@app.route("/dashboard/login", methods=["POST"])
+def dashboard_login():
+    if not DASHBOARD_KEY:
+        return html_response(dashboard.login_page("The dashboard is off: set DASHBOARD_KEY in Render."), 503)
+    if not hmac.compare_digest(request.form.get("key", ""), DASHBOARD_KEY):
+        return html_response(dashboard.login_page("Wrong password."), 403)
+    resp = make_response(redirect("/dashboard"))
+    resp.set_cookie(COOKIE, dashboard_token(), max_age=12 * 3600, httponly=True, secure=True, samesite="Strict")
+    return resp
+
+
+@app.route("/dashboard/logout")
+def dashboard_logout():
+    resp = make_response(redirect("/dashboard"))
+    resp.delete_cookie(COOKIE)
+    return resp
+
+
+def dashboard_data():
+    data = sheet_call("dashboard_data", {}) or {}
+    return data.get("intakes", []), data.get("contacts", []), data.get("imported", [])
+
+
+@app.route("/dashboard")
+def dashboard_home():
+    if not dashboard_ok():
+        return html_response(dashboard.login_page())
+    if not GOOGLE_SHEET_WEBHOOK_URL:
+        return html_response(dashboard.page("Dashboard", "<main><p class='msg'>Connect the Google Sheet first "
+                                            "(GOOGLE_SHEET_WEBHOOK_URL and SHEET_SECRET in Render).</p></main>"))
+    intakes, contacts_rows, imported = dashboard_data()
+    stats = dashboard.compute_stats(intakes, contacts_rows, imported)
+    audience = dashboard.broadcast_audience(contacts_rows, imported)
+    return html_response(dashboard.dashboard_page(stats, len(audience), request.args.get("msg", ""), BROADCAST_TEMPLATE))
+
+
+@app.route("/dashboard/chat")
+def dashboard_chat():
+    if not dashboard_ok():
+        return redirect("/dashboard")
+    phone = re.sub(r"\D", "", request.args.get("phone", ""))
+    messages = (sheet_call("messages_for", {"phone": phone}) or {}).get("messages", [])
+    return html_response(dashboard.chat_page(phone, messages, load_contact(phone)))
+
+
+@app.route("/dashboard/import", methods=["POST"])
+def dashboard_import():
+    if not dashboard_ok():
+        return redirect("/dashboard")
+    f = request.files.get("file")
+    try:
+        rows = dashboard.read_upload(f.filename if f else "", f.read() if f else b"")
+    except Exception as e:
+        return redirect("/dashboard?msg=" + requests.utils.quote(f"Could not read the file: {e}"))
+    batch = f"{now_iso()[:16]} {f.filename}"[:80]
+    for r in rows:
+        r.update({"import_batch": batch, "imported_at": now_iso()})
+    for i in range(0, len(rows), 200):
+        sheet_call("import_rows", {"rows": rows[i:i + 200]})
+    return redirect("/dashboard?msg=" + requests.utils.quote(f"Imported {len(rows)} rows from {f.filename}."))
+
+
+def run_broadcast(phones, template, language):
+    sent = 0
+    for phone in phones:
+        r = send_template(phone, template, language)
+        if r is not None and getattr(r, "status_code", 500) < 300:
+            sent += 1
+            save_contact(phone, last_broadcast_at=now_iso(), last_broadcast_template=template)
+        time.sleep(0.3)
+    print(f"[broadcast] {template}: sent {sent} of {len(phones)}")
+
+
+@app.route("/dashboard/broadcast", methods=["POST"])
+def dashboard_broadcast():
+    if not dashboard_ok():
+        return redirect("/dashboard")
+    template = re.sub(r"[^a-z0-9_]", "", request.form.get("template", "").strip().lower())
+    language = "fr" if request.form.get("language") == "fr" else "en"
+    _, contacts_rows, imported = dashboard_data()
+    phones = dashboard.broadcast_audience(contacts_rows, imported)
+    if not template:
+        return redirect("/dashboard?msg=" + requests.utils.quote("Enter the approved template name."))
+    if request.form.get("confirm", "").strip().upper() != f"SEND {len(phones)}":
+        return redirect("/dashboard?msg=" + requests.utils.quote(f"Not sent. Type exactly: SEND {len(phones)}"))
+    threading.Thread(target=run_broadcast, args=(phones, template, language), daemon=True).start()
+    return redirect("/dashboard?msg=" + requests.utils.quote(
+        f"Broadcast started to {len(phones)} people. Replies will come into the bot as normal."))
 
 
 if __name__ == "__main__":
