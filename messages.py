@@ -542,6 +542,18 @@ MESSAGES = {
         "en": "↩️ Now, let's pick up where we were:",
         "fr": "↩️ Bon, reprenons là où nous en étions :",
     },
+    "qa_check": {
+        "en": "Did that answer your question, {name}? 💛",
+        "fr": "Est-ce que ça répond à ta question, {name} ? 💛",
+    },
+    "ai_unavailable": {
+        "en": "That's a good question, {name}. A counselor will answer it for you here shortly 💛 Meanwhile, let's continue:",
+        "fr": "C'est une bonne question, {name}. Une conseillère va te répondre ici très bientôt 💛 En attendant, continuons :",
+    },
+    "qa_go_ahead": {
+        "en": "Of course, go ahead and type your question 💬",
+        "fr": "Bien sûr, écris ta question 💬",
+    },
     "menu": {
         "en": (
             "Here's what I can do for you, {name} 💛\n\n"
@@ -628,6 +640,8 @@ BUTTONS = {
     "heard_web": {"en": "Website", "fr": "Site internet"},
     "heard_health": {"en": "Health worker / clinic", "fr": "Agent de santé"},
     "heard_other": {"en": "Other", "fr": "Autre"},
+    "qa_continue": {"en": "Yes, let's continue", "fr": "Oui, on continue"},
+    "qa_more": {"en": "Another question", "fr": "Une autre question"},
     # Menu (works at any step)
     "g_lang": {"en": "🌍 Change language", "fr": "🌍 Changer de langue"},
     "g_human": {"en": "Talk to a person", "fr": "Parler à quelqu'un"},

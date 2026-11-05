@@ -81,8 +81,20 @@ def send_meta_request(payload):
         return None
 
 
+TYPING_DELAY = float(os.environ.get("TYPING_DELAY", "1"))  # 0 turns the pause off
+
+
+def pause_like_typing(text):
+    """A short, natural pause before each message, longer for longer messages (max ~3.5 s).
+    Urgent safety messages go out straight away."""
+    if TYPING_DELAY <= 0 or (text or "").startswith("🚨"):
+        return
+    time.sleep(TYPING_DELAY * min(0.8 + len(text or "") / 250, 3.5))
+
+
 def send_text(recipient_id, text_body):
     log_message(recipient_id, "bot", text_body)
+    pause_like_typing(text_body)
     if USE_INFOBIP:
         return infobip.send_text(recipient_id, text_body)
     payload = {
@@ -98,6 +110,7 @@ def send_text(recipient_id, text_body):
 def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text=None):
     """WhatsApp button limits: max 3 buttons, max 20 chars title, max 1024 chars body."""
     log_message(recipient_id, "bot", body_text + "  [" + " | ".join(b["title"] for b in buttons[:3]) + "]")
+    pause_like_typing(body_text)
     if USE_INFOBIP:
         return infobip.send_buttons(recipient_id, body_text, buttons, header_text, footer_text)
     interactive_obj = {
@@ -128,6 +141,7 @@ def send_buttons(recipient_id, body_text, buttons, header_text=None, footer_text
 def send_list(recipient_id, body_text, button_label, rows):
     """A list message: up to 10 rows, row titles max 24 chars, button label max 20 chars."""
     log_message(recipient_id, "bot", body_text + "  [" + " | ".join(r["title"] for r in rows[:10]) + "]")
+    pause_like_typing(body_text)
     if USE_INFOBIP:
         return infobip.send_list(recipient_id, body_text, button_label, rows)
     return send_meta_request({
@@ -160,7 +174,9 @@ def send_template(recipient_id, template_name, language_code):
 def mark_as_read(message_id):
     if USE_INFOBIP:
         return infobip.mark_as_read(message_id)
-    send_meta_request({"messaging_product": "whatsapp", "status": "read", "message_id": message_id})
+    # On Meta's Cloud API this also shows "typing…" until the next reply (Infobip has no equivalent).
+    send_meta_request({"messaging_product": "whatsapp", "status": "read", "message_id": message_id,
+                       "typing_indicator": {"type": "text"}})
 
 
 # =============================================================================
@@ -516,6 +532,11 @@ def first_message_is_urgent(text):
     return result is None or result.get("kind") == "urgent"
 
 
+# After an AI answer, these typed words mean "that helped, let's continue".
+QA_DONE_WORDS = {"yes", "ok", "okay", "thanks", "thank you", "thank u", "merci", "oui", "d'accord", "dacord",
+                 "continue", "continuer", "got it", "compris", "c'est bon", "ça va", "ca va", "yes thanks", "oui merci"}
+
+
 # Typed alone at any step (whole message), these work like the menu buttons.
 MENU_WORDS = {"menu"}
 LANGUAGE_WORDS = {"language", "languages", "langue", "langues"}
@@ -631,13 +652,28 @@ def handle_answer(session, user_input, button_id):
     option_id = button_id if button_id in option_ids else None
     text = user_input
 
+    # After the AI answered a side question: "yes, continue" or "another question".
+    if session.get("qa"):
+        low = text.strip(" .!").lower()
+        if button_id == "qa_continue" or (not button_id and low in QA_DONE_WORDS):
+            session.pop("qa", None)
+            say(session, "back_to_question")
+            ask(session)
+            return
+        if button_id == "qa_more":
+            say(session, "qa_go_ahead")
+            return
+
     if step in dict(PROFILE_STEPS) and not option_id and text.strip(" .!").lower() in SKIP_WORDS:
         spec["on_answer"](session, None, "Skipped")
         return
 
     if not option_id and text:
         option_id = match_option(step, text)
-        needs_ai = (option_ids and not option_id) or looks_like_question(text) or has_danger_words(text)
+        # With the AI on, every typed message that isn't an exact button choice is checked, so questions
+        # are caught however they are phrased. Without the AI, only obvious questions/danger words are.
+        needs_ai = (not option_id) if ai.AI_API_KEY else (
+            (option_ids and not option_id) or looks_like_question(text) or has_danger_words(text))
         if needs_ai:
             result = ai.classify(
                 spec["question"],
@@ -647,6 +683,13 @@ def handle_answer(session, user_input, button_id):
             )
             kind = (result or {}).get("kind")
             reply = (result or {}).get("reply", "")
+
+            if result is None and looks_like_question(text):
+                # The AI is down or busy: don't say "I didn't understand" to a real question.
+                data["questions_asked"] = (data.get("questions_asked", "") + f" | {text[:200]}").strip(" |")
+                say(session, "ai_unavailable")
+                ask(session)
+                return
 
             if kind == "urgent":
                 data["warning_signs"] = f"Reported: {text[:200]}"
@@ -664,11 +707,17 @@ def handle_answer(session, user_input, button_id):
                     send_text(session["phone"], (reply + "\n\n" if reply else "") + t(session, "ai_limit"))
                     hand_to_human(session)
                     return
-                # One message with the answer and a gentle "back to it", then the question again.
-                send_text(session["phone"], (reply + "\n\n" if reply else "") + t(session, "back_to_question"))
-                ask(session)
+                # Answer her question, then check it helped before going back to the intake.
+                if reply:
+                    send_text(session["phone"], reply)
+                session["qa"] = True
+                ask_buttons(session, "qa_check", ["qa_continue", "qa_more"])
                 return
+            if kind == "answer" and option_ids and looks_like_question(text) and not reply:
+                # Safety net: a question must not be taken as "yes" to the current question.
+                kind, result = "unclear", None
             if kind == "answer":
+                session.pop("qa", None)
                 option_id = result.get("option_id") or option_id
                 text = result.get("value") or text
             if option_ids and not option_id:
@@ -681,6 +730,7 @@ def handle_answer(session, user_input, button_id):
         ask(session)
         return
 
+    session.pop("qa", None)
     value = option_title(step, option_id) if option_id else text
     spec["on_answer"](session, option_id, value)
 
