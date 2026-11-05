@@ -469,7 +469,7 @@ def handle_client_message(msg):
                 send_text(sender_id, MESSAGES["opt_out_ack"]["en"] + "\n\n" + MESSAGES["opt_out_ack"]["fr"])
             return
 
-        if session and session.get("mode") == "human":
+        if session and session.get("mode") == "human" and low not in CLIENT_RESTART_WORDS:
             last = session.get("updated_at") or session.get("started_at")
             try:
                 age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 86400
@@ -687,10 +687,10 @@ def handle_answer(session, user_input, button_id):
             )
             kind = (result or {}).get("kind")
             reply = (result or {}).get("reply", "")
-            if kind in ("answer", "unclear") and looks_like_question(text) and not (kind == "answer" and reply):
-                # It reads like a question but the AI didn't treat it as one: ask the AI to answer it directly.
-                # (A typed question must never be saved as her name, city, etc., or read as "not understood".)
-                print(f"[AI] {step}: question came back as '{kind}', asking the AI to answer it directly")
+            if kind in ("answer", "unclear") and looks_like_question(text):
+                # It reads like a question but the AI didn't treat it as one: answer it as a question.
+                # (A typed question must never be taken as a menu choice, saved as her city, or "not understood".)
+                print(f"[AI] {step}: question came back as '{kind}', answering it as a question")
                 direct = ai.answer_question(text, data.get("language", "en"))
                 if direct:
                     result, kind, reply = {"kind": "question", "reply": direct}, "question", direct
