@@ -6,12 +6,38 @@ Only the client's message and the current question are sent. No phone number or 
 """
 import json
 import os
+import time
 
 import requests
 
 AI_API_KEY = os.environ.get("AI_API_KEY")
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
 AI_MODEL = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+# Tried in order when the main model is busy (429/503) or slow. Defaults suit Gemini's free tier.
+_default_fallback = "gemini-3.5-flash-lite,gemini-flash-lite-latest" if "googleapis" in AI_BASE_URL else ""
+AI_FALLBACK_MODELS = [m.strip() for m in os.environ.get("AI_FALLBACK_MODELS", _default_fallback).split(",") if m.strip()]
+
+
+def chat(messages, json_mode=False, timeout=20):
+    """One chat completion, retrying busy errors and falling back to lighter models. Returns text or None."""
+    models = [AI_MODEL] + [m for m in AI_FALLBACK_MODELS if m != AI_MODEL]
+    attempts = [models[0], models[0]] + models[1:]
+    for i, model in enumerate(attempts):
+        body = {"model": model, "temperature": 0.2, "messages": messages}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        try:
+            r = requests.post(f"{AI_BASE_URL}/chat/completions", json=body, timeout=timeout,
+                              headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"})
+            if r.status_code in (429, 500, 502, 503, 504):
+                print(f"[AI busy] {model}: {r.status_code}")
+                time.sleep(0.6 if i == 0 else 0.2)
+                continue
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"[AI error] {model}: {e}")
+    return None
 
 KNOWLEDGE = """
 Aunty Queen Hotline shares general information on sexual and reproductive health, including safe abortion
@@ -53,7 +79,9 @@ Return only JSON: {"kind": ..., "option_id": ..., "value": ..., "reply": ...}
 kind is one of:
 - "answer": the message answers the current question. Set option_id to the matching option id if there are
   options, and value to the answer in a few words.
-- "question": the client asks something else. Put a short, kind answer in reply.
+- "question": the client asks something (how, what, why, when, can, will, is it…), even if it is about the
+  same topic as the current question or comes before agreeing to it. A message that asks something is ALWAYS
+  "question", never "answer". Put a short, kind answer in reply.
 - "urgent": the client describes a warning sign happening now (heavy bleeding, severe pain, bad-smelling
   discharge, high fever) or any emergency. reply: tell her to go to the nearest health facility now and that it
   is treated like a miscarriage.
@@ -87,25 +115,9 @@ def summarize(data, status=""):
     # No name or phone is sent to the AI.
     fields = {k: v for k, v in (data or {}).items() if v not in ("", None) and k not in ("consent", "name")}
     fields["status"] = status
-    try:
-        r = requests.post(
-            f"{AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": AI_MODEL,
-                "temperature": 0.2,
-                "messages": [
-                    {"role": "system", "content": SUMMARY_PROMPT},
-                    {"role": "user", "content": json.dumps(fields, ensure_ascii=False)[:3000]},
-                ],
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        return (r.json()["choices"][0]["message"]["content"] or "").strip()[:500]
-    except Exception as e:
-        print(f"[AI summary error]: {e}")
-        return ""
+    text = chat([{"role": "system", "content": SUMMARY_PROMPT},
+                 {"role": "user", "content": json.dumps(fields, ensure_ascii=False)[:3000]}], timeout=30)
+    return (text or "").strip()[:500]
 
 
 def classify(current_question, options, message, language="en"):
@@ -117,23 +129,11 @@ def classify(current_question, options, message, language="en"):
         f"LANGUAGE: {'French' if language == 'fr' else 'English'}\n"
         f"CURRENT QUESTION: {current_question}\nOPTIONS:\n{opts}\nCLIENT MESSAGE: {message[:1000]}"
     )
+    text = chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}], json_mode=True)
+    if not text:
+        return None
     try:
-        r = requests.post(
-            f"{AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": AI_MODEL,
-                "temperature": 0.2,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user},
-                ],
-            },
-            timeout=20,
-        )
-        r.raise_for_status()
-        result = json.loads(r.json()["choices"][0]["message"]["content"])
+        result = json.loads(text.strip().removeprefix("```json").removesuffix("```").strip())
         if result.get("kind") not in ("answer", "question", "urgent", "human", "unclear"):
             return None
         valid_ids = {oid for oid, _ in options or []}
